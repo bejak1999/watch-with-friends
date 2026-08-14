@@ -87,12 +87,29 @@ server.listen(config.port, config.host, () => {
   console.log(`\n  Watch With Friends`);
   console.log(`  listening on http://${config.host}:${config.port}`);
   console.log(`  data dir:    ${config.dataDir}`);
-  if (bootstrap) {
+  if (bootstrap.created) {
     console.log('\n  ================ FIRST RUN ================');
     console.log(`  Admin account created`);
-    console.log(`    username: ${bootstrap.username}`);
-    console.log(`    password: ${bootstrap.password}`);
+    console.log(`    username: ${bootstrap.created.username}`);
+    console.log(`    password: ${bootstrap.created.password}`);
     console.log('  Change this password after signing in.');
+    console.log('  ===========================================\n');
+  }
+  if (bootstrap.ignoredEnv) {
+    const { username, existing } = bootstrap.ignoredEnv;
+    console.log('\n  ============== HEADS UP ===================');
+    console.log('  ADMIN_USERNAME / ADMIN_PASSWORD were set, but this database');
+    console.log('  already has accounts, so they were IGNORED.');
+    console.log('');
+    console.log(`  You asked for: ${username}`);
+    console.log(`  Accounts that exist: ${existing.join(', ')}`);
+    console.log('');
+    console.log('  Those variables only apply to a brand new database. To change');
+    console.log('  a password now, run:');
+    console.log('');
+    console.log(`    node server/dist/admin-cli.js reset ${username} <new-password>`);
+    console.log('');
+    console.log('  (from the host: docker exec -it <container> node server/dist/admin-cli.js list)');
     console.log('  ===========================================\n');
   }
 });

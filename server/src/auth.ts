@@ -117,13 +117,34 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction): v
   next();
 }
 
+export interface BootstrapResult {
+  /** Set when an account was created and we invented the password. */
+  created?: { username: string; password: string };
+  /** Set when ADMIN_* were supplied but the database already had accounts. */
+  ignoredEnv?: { username: string; existing: string[] };
+}
+
 /**
  * Creates the first admin when the database is empty so a fresh deployment is
- * never locked out. Returns the generated password when one had to be invented.
+ * never locked out.
+ *
+ * ADMIN_USERNAME / ADMIN_PASSWORD deliberately do nothing once accounts exist -
+ * otherwise anyone who could edit the compose file could silently take over an
+ * existing account. Say so loudly, because setting them later and getting no
+ * feedback is baffling.
  */
-export function ensureBootstrapAdmin(): { username: string; password: string } | null {
+export function ensureBootstrapAdmin(): BootstrapResult {
   const count = db.prepare('SELECT COUNT(*) AS c FROM users').get() as { c: number };
-  if (count.c > 0) return null;
+
+  if (count.c > 0) {
+    if (config.adminPassword) {
+      const existing = (db.prepare('SELECT username FROM users ORDER BY created_at').all() as Array<{
+        username: string;
+      }>).map((r) => r.username);
+      return { ignoredEnv: { username: config.adminUsername, existing } };
+    }
+    return {};
+  }
 
   const password = config.adminPassword || crypto.randomBytes(9).toString('base64url');
   const now = Date.now();
@@ -132,5 +153,5 @@ export function ensureBootstrapAdmin(): { username: string; password: string } |
      VALUES (?, ?, ?, ?, 1, ?, '{}', ?)`
   ).run(newId(), config.adminUsername, config.adminUsername, hashPassword(password), '#7c5cff', now);
 
-  return config.adminPassword ? null : { username: config.adminUsername, password };
+  return config.adminPassword ? {} : { created: { username: config.adminUsername, password } };
 }

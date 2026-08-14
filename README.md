@@ -69,6 +69,14 @@ Sign in as `admin`, **change the password** under Settings, then go to
 **Admin → Codes** to generate registration codes for your friends. That's the whole
 setup. 🎉
 
+> [!WARNING]
+> **`ADMIN_USERNAME` and `ADMIN_PASSWORD` only work on a brand-new database.**
+> Once an account exists they are ignored — otherwise anyone who could edit the
+> compose file could take over an existing account. Setting them after the first
+> start and then failing to sign in is the most common trip-up; the container log
+> now says so explicitly. To change a password afterwards, use
+> [🆘 Locked out?](#-locked-out) below.
+
 <details>
 <summary><b>Prefer Docker Compose?</b> One file, still no <code>.env</code> needed.</summary>
 
@@ -229,6 +237,35 @@ Pasting normal video links works without one. A key unlocks **playlist import** 
 5. 📋 Paste it into **Admin → Settings → Integrations** (or set `YOUTUBE_API_KEY`)
 
 Free quota is 10,000 units/day ≈ 100 playlist imports or searches.
+
+---
+
+## 🆘 Locked out?
+
+Every recovery path runs inside the container — you never lose data.
+
+```bash
+# Who exists, who is an admin, and which accounts are in back-off
+docker exec -it watch-with-friends node server/dist/admin-cli.js list
+
+# Set a password, grant admin, re-enable the account, clear its lockout
+docker exec -it watch-with-friends node server/dist/admin-cli.js reset admin 'my new password'
+
+# Clear only the failed-login back-off
+docker exec -it watch-with-friends node server/dist/admin-cli.js unlock admin
+
+# Add a brand-new admin account
+docker exec -it watch-with-friends node server/dist/admin-cli.js create benni 'my new password'
+```
+
+Common causes:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| "Wrong username or password" right after setting `ADMIN_*` | Those only apply to an empty database | `admin-cli.js reset` |
+| Forgot the generated password | It was printed once, on first start | `admin-cli.js reset` |
+| "Too many failed attempts" | Brute-force back-off | Wait it out, or `admin-cli.js unlock` |
+| Password containing `$` is truncated | Docker Compose expands `$…` in `.env` | Single-quote it (`ADMIN_PASSWORD='a$b'`) or double the `$$`. A backslash does **not** work. |
 
 ---
 
