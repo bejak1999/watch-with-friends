@@ -12,7 +12,7 @@ no random strangers. Just you, your friends, and a shared play button.
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?style=flat-square&logo=sqlite&logoColor=white)
-![License](https://img.shields.io/badge/license-private-lightgrey?style=flat-square)
+![Self-hosted](https://img.shields.io/badge/self--hosted-yes-8A2BE2?style=flat-square)
 
 </div>
 
@@ -51,15 +51,12 @@ no random strangers. Just you, your friends, and a shared play button.
 
 ## 🚀 Install
 
-> [!IMPORTANT]
-> This repository is **private**, so every command below needs credentials.
-> Set that up once on your server first — see
-> [🔑 Authenticating a private repo](#-authenticating-a-private-repo).
-
 ### Option A — one command on your server ⚡
 
 ```bash
-gh repo clone bejak1999/watch-with-friends && cd watch-with-friends && ./install.sh
+git clone https://github.com/bejak1999/watch-with-friends.git
+cd watch-with-friends
+./install.sh
 ```
 
 The script checks Docker, generates your `SESSION_SECRET`, asks for your domain and
@@ -69,21 +66,14 @@ two minutes. Re-run it any time after `git pull` to update — it detects the ex
 
 ### Option B — pull a prebuilt image 🐳
 
-Every push to `main` builds an image and publishes it to GitHub Container Registry,
-so your server never has to compile anything. Good for a NAS with a slow CPU.
+Every push to `main` builds a multi-stage image and publishes it to GitHub Container
+Registry, so your server never has to compile anything. Good for a NAS with a slow CPU.
 
 ```bash
-# 1. Log in to the registry (token needs read:packages)
-echo <YOUR_TOKEN> | docker login ghcr.io -u bejak1999 --password-stdin
+curl -O https://raw.githubusercontent.com/bejak1999/watch-with-friends/main/docker-compose.ghcr.yml
+curl -o .env https://raw.githubusercontent.com/bejak1999/watch-with-friends/main/.env.example
 
-# 2. Grab the two files you need. raw.githubusercontent.com does not work on a
-#    private repo, so fetch them through the API or just clone the repo.
-gh api repos/bejak1999/watch-with-friends/contents/docker-compose.ghcr.yml \
-  --jq '.content' | base64 -d > docker-compose.ghcr.yml
-gh api repos/bejak1999/watch-with-friends/contents/.env.example \
-  --jq '.content' | base64 -d > .env
-
-# 3. Edit .env - at minimum set SESSION_SECRET
+# At minimum set SESSION_SECRET
 nano .env
 
 docker compose -f docker-compose.ghcr.yml up -d
@@ -95,6 +85,14 @@ docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
+> [!NOTE]
+> GitHub publishes container packages as **private** even from a public repo. If
+> `docker pull` says *denied*, either make the package public once under
+> **Packages → watch-with-friends → Package settings → Change visibility**, or log in:
+> ```bash
+> echo <TOKEN_WITH_read:packages> | docker login ghcr.io -u bejak1999 --password-stdin
+> ```
+
 ### Option C — plain Docker Compose 🔧
 
 ```bash
@@ -102,57 +100,6 @@ cp .env.example .env
 # set SESSION_SECRET:  openssl rand -base64 48
 docker compose up -d --build
 ```
-
-### 🔑 Authenticating a private repo
-
-Pick whichever suits your server:
-
-<details>
-<summary><b>GitHub CLI</b> — easiest, works for both git and GHCR</summary>
-
-```bash
-# Install: https://github.com/cli/cli#installation
-gh auth login            # device flow, no password typing
-gh auth setup-git        # lets plain `git clone/pull` work too
-
-# And for pulling container images:
-gh auth token | docker login ghcr.io -u bejak1999 --password-stdin
-```
-</details>
-
-<details>
-<summary><b>Personal access token</b> — good for headless boxes</summary>
-
-Create a **classic** token at <https://github.com/settings/tokens> with the `repo` and
-`read:packages` scopes, then:
-
-```bash
-git clone https://<TOKEN>@github.com/bejak1999/watch-with-friends.git
-echo <TOKEN> | docker login ghcr.io -u bejak1999 --password-stdin
-```
-
-Store it in `~/.git-credentials` (via `git config --global credential.helper store`)
-so `git pull` keeps working unattended.
-</details>
-
-<details>
-<summary><b>Deploy key</b> — read-only, scoped to this one repo</summary>
-
-```bash
-ssh-keygen -t ed25519 -C "truenas-wwf" -f ~/.ssh/wwf_deploy
-cat ~/.ssh/wwf_deploy.pub
-```
-
-Paste the public key under **Settings → Deploy keys → Add deploy key** in this repo,
-then:
-
-```bash
-GIT_SSH_COMMAND="ssh -i ~/.ssh/wwf_deploy" \
-  git clone git@github.com:bejak1999/watch-with-friends.git
-```
-
-Note that a deploy key covers `git` only — GHCR image pulls still need a token.
-</details>
 
 ### 🔓 First sign-in
 

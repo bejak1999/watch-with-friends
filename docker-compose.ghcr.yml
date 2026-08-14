@@ -1,5 +1,7 @@
 # Runs the prebuilt image from GitHub Container Registry instead of building
-# locally. The package is private, so log in once on the host first:
+# locally. GitHub publishes packages as private by default even from a public
+# repo - if the pull is denied, either flip the package to public once in its
+# settings, or log in on the host first:
 #
 #   echo <TOKEN_WITH_read:packages> | docker login ghcr.io -u bejak1999 --password-stdin
 #
