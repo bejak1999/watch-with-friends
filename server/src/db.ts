@@ -155,6 +155,12 @@ MIGRATIONS.push((d) => {
   `);
 });
 
+MIGRATIONS.push((d) => {
+  // Bumped whenever a password changes, which invalidates every cookie signed
+  // before it - otherwise a stolen session would outlive the password reset.
+  d.exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;`);
+});
+
 export function migrate(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {

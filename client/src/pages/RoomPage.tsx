@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useApp } from '../state/AppState';
 import { useRoom } from '../hooks/useRoom';
 import { SyncPlayer, expectedPosition, type SyncPlayerHandle } from '../components/player/SyncPlayer';
+import type { QualityOption } from '../components/player/adapters';
 import { QueuePanel } from '../components/room/QueuePanel';
 import { ChatPanel } from '../components/room/ChatPanel';
 import { PeoplePanel } from '../components/room/PeoplePanel';
@@ -49,6 +50,8 @@ export function RoomPage() {
   const [theater, setTheater] = useState(false);
   const [unread, setUnread] = useState(0);
   const [playerFailed, setPlayerFailed] = useState(false);
+  const [qualities, setQualities] = useState<QualityOption[]>([]);
+  const [quality, setQuality] = useState('auto');
 
   const canControl = room?.permissions.canControl ?? false;
   const canQueue = room?.permissions.canQueue ?? false;
@@ -60,8 +63,10 @@ export function RoomPage() {
   /* Track the player clock for the scrub bar. */
   useEffect(() => {
     const timer = window.setInterval(() => {
-      const t = playerRef.current?.getTime() ?? 0;
-      setLocalTime(t > 0 ? t : expectedPosition(playback, serverOffset));
+      // Position 0 is a real position, so ask whether the player is loaded
+      // rather than treating a falsy time as "no reading yet".
+      const player = playerRef.current;
+      setLocalTime(player?.isReady() ? player.getTime() : expectedPosition(playback, serverOffset));
     }, 250);
     return () => window.clearInterval(timer);
   }, [playback, serverOffset]);
@@ -119,7 +124,10 @@ export function RoomPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canControl, playback, serverOffset]);
 
-  const currentPosition = () => playerRef.current?.getTime() || expectedPosition(playback, serverOffset);
+  const currentPosition = () => {
+    const player = playerRef.current;
+    return player?.isReady() ? player.getTime() : expectedPosition(playback, serverOffset);
+  };
 
   const togglePlay = () => {
     if (!canControl) {
@@ -150,6 +158,16 @@ export function RoomPage() {
   const onReport = useCallback((p: number) => actions.reportPosition(p), [actions]);
   const onDuration = useCallback((itemId: string, s: number) => actions.reportDuration(itemId, s), [actions]);
   const onEnded = useCallback((itemId: string) => actions.reportEnded(itemId), [actions]);
+  const onQualities = useCallback((options: QualityOption[], activeId: string) => {
+    setQualities(options);
+    setQuality(activeId);
+  }, []);
+
+  const changeQuality = useCallback((id: string) => {
+    setQuality(id);
+    playerRef.current?.setQuality(id);
+  }, []);
+
   const onPlayerError = useCallback(
     (message: string) => {
       setPlayerFailed(true);
@@ -196,6 +214,7 @@ export function RoomPage() {
             onDuration={onDuration}
             onError={onPlayerError}
             onReport={onReport}
+            onQualities={onQualities}
           />
 
           {/* Keeps clicks from reaching the embedded player so the room stays authoritative. */}
@@ -261,8 +280,8 @@ export function RoomPage() {
             }}
           />
 
-          <div className="row between" style={{ gap: 10 }}>
-            <div className="row" style={{ gap: 2 }}>
+          <div className="row between control-row" style={{ gap: 10 }}>
+            <div className="row transport" style={{ gap: 2 }}>
               <button className="btn ghost icon" onClick={() => actions.prev()} disabled={!canControl} title="Previous">
                 <Icon name="prev" size={17} />
               </button>
@@ -294,7 +313,7 @@ export function RoomPage() {
               )}
             </div>
 
-            <div className="row" style={{ gap: 4 }}>
+            <div className="row secondary-controls" style={{ gap: 4 }}>
               <button className="btn ghost icon" onClick={() => setMuted((m) => !m)} title="Mute (m)">
                 <Icon name={muted || volume === 0 ? 'mute' : 'volume'} size={17} />
               </button>
@@ -324,7 +343,30 @@ export function RoomPage() {
                   ))}
                 </select>
               )}
-              <button className="btn ghost icon" onClick={() => setTheater((v) => !v)} title="Theater mode (t)">
+              {qualities.length > 1 && (
+                <select
+                  className="select"
+                  style={{ width: 86, height: 32 }}
+                  value={quality}
+                  onChange={(e) => changeQuality(e.target.value)}
+                  title={
+                    currentItem?.source === 'youtube'
+                      ? 'Resolution (YouTube treats this as a hint and may override it)'
+                      : 'Resolution - only affects your own screen'
+                  }
+                >
+                  {qualities.map((q) => (
+                    <option key={q.id} value={q.id}>
+                      {q.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                className="btn ghost icon hide-sm"
+                onClick={() => setTheater((v) => !v)}
+                title="Theater mode (t)"
+              >
                 <Icon name={theater ? 'collapse' : 'expand'} size={16} />
               </button>
               <button className="btn ghost icon" onClick={toggleFullscreen} title="Fullscreen (f)">

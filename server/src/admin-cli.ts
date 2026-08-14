@@ -9,7 +9,7 @@
  * a second listener against the same database.
  */
 import { db, migrate } from './db';
-import { hashPassword, newId } from './auth';
+import { hashPassword, newId, revokeSessions } from './auth';
 import type { UserRow } from './types';
 
 const [, , command, ...args] = process.argv;
@@ -126,8 +126,13 @@ switch (command) {
       hashPassword(password),
       user.id
     );
+    // Whoever was signed in with the old password should not stay signed in.
+    revokeSessions(user.id);
     const left = clearLockFor(username);
-    console.log(`\n  Password reset for "${username}". It is now an enabled admin account.\n`);
+    console.log(
+      `\n  Password reset for "${username}". It is now an enabled admin account,\n` +
+        `  and any existing sessions were signed out.\n`
+    );
     reportRemaining(left);
     break;
   }

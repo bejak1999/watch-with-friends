@@ -14,7 +14,7 @@ import {
   roomByInviteToken,
   roomSummaries,
 } from '../services/rooms';
-import { getOnlineCounts, roomSnapshot, broadcastRoom, kickUser } from '../realtime';
+import { getOnlineCounts, roomSnapshot, broadcastRoom, kickUser, forgetRoom } from '../realtime';
 import type { RoomRow } from '../types';
 
 export const roomsRouter = Router();
@@ -271,5 +271,6 @@ roomsRouter.delete('/:id', (req, res) => {
   }
   kickUser(room.id, null, 'This room was deleted');
   db.prepare('DELETE FROM rooms WHERE id = ?').run(room.id);
+  forgetRoom(room.id);
   res.json({ ok: true });
 });

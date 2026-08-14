@@ -32,7 +32,8 @@ no random strangers. Just you, your friends, and a shared play button.
 | 👑 | **Host controls.** Let everyone drive, or lock playback and the queue to hosts. Promote, remove, or block people. |
 | 🛡️ | **Brute-force protection.** Three free mistakes, then every wrong password doubles the wait — 2s, 4s, 8s… up to 15 minutes. |
 | 🎨 | **Themes.** Dark, Midnight (OLED black) and Light, a pickable accent colour, and three densities — saved to your account. |
-| 📱 | **Works on phones.** Responsive layout, theater mode, fullscreen, keyboard shortcuts. |
+| 🔍 | **Resolution control.** Pick a rendition for HLS, Vimeo and Twitch — your choice only, so a slow connection never drags anyone else down. |
+| 📱 | **Works on phones.** Responsive layout, fullscreen, keyboard shortcuts, and controls that adapt instead of clipping. |
 
 ## 📺 Supported sources
 
@@ -306,7 +307,25 @@ appended — rather than the spoofable left-most one.
 
 **Passwords** are hashed with scrypt (N=16384, r=8, p=1) and a per-user random salt.
 Sessions are signed JWTs in an `httpOnly`, `SameSite=Lax` cookie, marked `Secure`
-whenever the request arrives over HTTPS.
+whenever the request arrives over HTTPS. Every session carries a version number, so
+**changing a password or disabling an account signs out every device instantly** —
+a cookie stolen earlier stops working the moment the password changes.
+
+**No server-side request forgery.** Resolving a pasted link is the one place a member
+can make the server talk to another host, so it refuses to probe anything that
+resolves to a private, loopback, link-local or reserved address — your router, other
+NAS services and cloud metadata endpoints are all out of reach. Playing a LAN file
+still works (`http://192.168.1.50:8096/movie.mp4`), because playback happens in your
+own browser and never touches the server.
+
+**Everything a browser sends is validated**, over REST *and* WebSocket: queue items
+must name a known source and an `http(s)` or upload URL, so nobody can inject a
+`javascript:` or `file:` link into someone else's player. Chat and queue edits are
+rate-limited per connection.
+
+**Response headers**: `nosniff`, `X-Frame-Options: SAMEORIGIN` (the admin panel can't
+be framed), a strict referrer policy, and `Permissions-Policy` denying camera,
+microphone and geolocation.
 
 > [!TIP]
 > Want a second lock on the door? Put **Cloudflare Access** in front of the hostname

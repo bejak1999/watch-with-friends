@@ -726,6 +726,11 @@ img { display: block; max-width: 100%; }
 
 .now-playing { display: flex; align-items: center; gap: 10px; min-width: 0; }
 
+/* The control row must never clip a button - wrap to a second line instead. */
+.control-row { flex-wrap: wrap; row-gap: 8px; }
+.control-row .transport { flex: 0 0 auto; }
+.control-row .secondary-controls { flex: 0 0 auto; margin-left: auto; }
+
 /* ---------------------------------------------------------------- */
 /* Side panel (queue / chat / people)                                */
 /* ---------------------------------------------------------------- */
@@ -1126,6 +1131,17 @@ img { display: block; max-width: 100%; }
   .controls { border-radius: 0; border-left: 0; border-right: 0; }
   .side { border-radius: 0; border-left: 0; border-right: 0; min-height: 60vh; }
   .theme-options { grid-template-columns: 1fr; }
+}
+
+/* Phone-sized control bar: keep transport + fullscreen, shed what does not fit. */
+@media (max-width: 760px) {
+  .hide-sm { display: none !important; }
+  /* Phones have hardware volume keys; the slider only steals room. */
+  .volume { display: none; }
+  .control-row .now-playing { display: none; }
+  .control-row .transport { flex: 1 1 auto; }
+  .control-row .secondary-controls { flex: 0 0 auto; }
+  .controls { padding: 8px 10px; }
 }
 
 @media (max-width: 520px) {

@@ -23,6 +23,21 @@ const app = express();
 if (config.trustProxy) app.set('trust proxy', true);
 app.disable('x-powered-by');
 
+/**
+ * Baseline hardening. No CSP: the player deliberately embeds YouTube, Vimeo and
+ * Twitch frames and loads their SDKs, so a useful policy would have to allow
+ * exactly what an attacker would want anyway.
+ */
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  // We embed others; nobody embeds us. Stops clickjacking of the admin panel.
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), interest-cohort=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  next();
+});
+
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
 app.use(attachUser);

@@ -1,5 +1,6 @@
 import { config } from '../config';
 import { getSetting } from '../db';
+import { isSafeToFetch } from './ssrf';
 import type { MediaItem } from '../types';
 
 export function youtubeApiKey(): string {
@@ -354,11 +355,25 @@ export async function resolveDirect(rawUrl: string): Promise<MediaItem> {
   let looksPlayable = DIRECT_EXTENSIONS.test(url.pathname);
 
   if (!looksPlayable) {
-    // A HEAD probe keeps us from queueing an HTML page as if it were a video.
+    // A HEAD probe keeps us from queueing an HTML page as if it were a video,
+    // but it is also the one place a member can make this server talk to an
+    // arbitrary host - so never probe anything on the local network.
+    const verdict = await isSafeToFetch(rawUrl);
+    if (!verdict.safe) {
+      throw new MediaError(
+        'That link has no recognisable video extension, and this server will not probe ' +
+          `addresses on its own network (${verdict.reason}). Link directly to a .mp4, .webm or .m3u8 file instead.`
+      );
+    }
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 6000);
-      const res = await fetch(rawUrl, { method: 'HEAD', signal: controller.signal });
+      const res = await fetch(rawUrl, {
+        method: 'HEAD',
+        signal: controller.signal,
+        // A redirect could still land somewhere internal.
+        redirect: 'manual',
+      });
       clearTimeout(timer);
       const type = res.headers.get('content-type') || '';
       if (/^(video|audio)\//i.test(type) || /mpegurl|dash\+xml/i.test(type)) looksPlayable = true;

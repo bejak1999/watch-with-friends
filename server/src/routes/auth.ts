@@ -8,6 +8,7 @@ import {
   issueSession,
   newId,
   requireAuth,
+  revokeSessions,
   toPublicUser,
   verifyPassword,
 } from '../auth';
@@ -289,7 +290,8 @@ authRouter.post('/change-password', requireAuth, (req, res) => {
 
   clearFailures(limitKeys);
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(parsed.data.newPassword), row.id);
-  // Re-issue so the cookie lifetime resets.
+  // Retire sessions signed with the old password, then re-issue for this browser.
+  revokeSessions(row.id);
   issueSession(res, row.id, req);
   res.json({ ok: true });
 });

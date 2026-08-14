@@ -1,6 +1,13 @@
 import type { QueueItem } from '../../lib/api';
 
+export interface QualityOption {
+  id: string;
+  label: string;
+}
+
 export interface AdapterCallbacks {
+  /** Fired once the player knows which resolutions it can offer. */
+  onQualities?: (options: QualityOption[], activeId: string) => void;
   onReady: () => void;
   onEnded: () => void;
   onBuffering: (buffering: boolean) => void;
@@ -25,6 +32,8 @@ export interface Adapter {
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
   setRate(rate: number): void;
+  /** Resolution is a per-viewer choice, never synced - bandwidth differs. */
+  setQuality?(id: string): void;
   destroy(): void;
 }
 
@@ -63,6 +72,11 @@ declare global {
     Twitch?: any;
   }
 }
+
+const YT_QUALITY_LABELS: Record<string, string> = {
+  tiny: '144p', small: '240p', medium: '360p', large: '480p',
+  hd720: '720p', hd1080: '1080p', hd1440: '1440p', hd2160: '2160p', highres: 'Max',
+};
 
 let ytReady: Promise<void> | null = null;
 
@@ -148,6 +162,7 @@ class YouTubeAdapter implements Adapter {
           if (e.data === YT.PLAYING) {
             const d = this.player.getDuration?.();
             if (d > 0) this.cb.onDuration(d);
+            this.publishQualities();
           }
           this.lastState = e.data;
         },
@@ -173,6 +188,23 @@ class YouTubeAdapter implements Adapter {
   setVolume(v: number) { this.player?.setVolume?.(Math.round(v * 100)); }
   setMuted(m: boolean) { m ? this.player?.mute?.() : this.player?.unMute?.(); }
   setRate(r: number) { this.player?.setPlaybackRate?.(r); }
+
+  setQuality(id: string) {
+    // YouTube treats this as a hint and may override it based on bandwidth.
+    this.player?.setPlaybackQuality?.(id === 'auto' ? 'default' : id);
+  }
+
+  private publishQualities() {
+    if (!this.cb.onQualities) return;
+    const levels: string[] = this.player?.getAvailableQualityLevels?.() ?? [];
+    if (levels.length === 0) return;
+    const options = [
+      { id: 'auto', label: 'Auto' },
+      ...levels.filter((l) => l !== 'auto').map((l) => ({ id: l, label: YT_QUALITY_LABELS[l] ?? l })),
+    ];
+    const active = this.player?.getPlaybackQuality?.();
+    this.cb.onQualities(options, active && active !== 'auto' ? active : 'auto');
+  }
 
   destroy() {
     this.destroyed = true;
@@ -250,6 +282,19 @@ class VimeoAdapter implements Adapter {
       this.time = d.seconds;
       this.duration = d.duration;
     });
+    // Vimeo exposes real renditions, so this genuinely changes the stream.
+    void this.player
+      .getQualities?.()
+      .then((qs: Array<{ id: string; label: string }>) => {
+        if (this.destroyed || !this.cb.onQualities || !Array.isArray(qs)) return;
+        const options = [
+          { id: 'auto', label: 'Auto' },
+          ...qs.filter((q) => q.id !== 'auto').map((q) => ({ id: q.id, label: q.label || q.id })),
+        ];
+        this.cb.onQualities(options, 'auto');
+      })
+      .catch(() => undefined);
+
     this.player.on('bufferstart', () => this.cb.onBuffering(true));
     this.player.on('bufferend', () => this.cb.onBuffering(false));
     this.player.on('ended', () => this.cb.onEnded());
@@ -264,6 +309,7 @@ class VimeoAdapter implements Adapter {
   setVolume(v: number) { this.player?.setVolume?.(v).catch(() => undefined); }
   setMuted(m: boolean) { this.player?.setMuted?.(m).catch(() => undefined); }
   setRate(r: number) { this.player?.setPlaybackRate?.(r).catch(() => undefined); }
+  setQuality(id: string) { this.player?.setQuality?.(id).catch(() => undefined); }
 
   destroy() {
     this.destroyed = true;
@@ -339,6 +385,7 @@ class TwitchAdapter implements Adapter {
       const d = this.player.getDuration?.();
       if (d > 0) this.cb.onDuration(d);
       this.cb.onReady();
+      this.publishQualities();
     });
     this.player.addEventListener(P.ENDED, () => this.cb.onEnded());
     this.player.addEventListener(P.PLAYING, () => this.cb.onBuffering(false));
@@ -353,6 +400,19 @@ class TwitchAdapter implements Adapter {
   setVolume(v: number) { this.player?.setVolume?.(v); }
   setMuted(m: boolean) { this.player?.setMuted?.(m); }
   setRate() { /* Twitch has no playback rate API */ }
+
+  setQuality(id: string) { this.player?.setQuality?.(id); }
+
+  private publishQualities() {
+    if (!this.cb.onQualities) return;
+    const qs: Array<{ group: string; name: string }> = this.player?.getQualities?.() ?? [];
+    if (qs.length === 0) return;
+    const options = [
+      { id: 'auto', label: 'Auto' },
+      ...qs.filter((q) => q.group !== 'auto').map((q) => ({ id: q.group, label: q.name || q.group })),
+    ];
+    this.cb.onQualities(options, this.player?.getQuality?.() || 'auto');
+  }
 
   destroy() {
     this.destroyed = true;
@@ -425,6 +485,21 @@ class HtmlAdapter implements Adapter {
           this.hls = new Hls({ enableWorker: true, lowLatencyMode: false });
           this.hls.loadSource(this.src);
           this.hls.attachMedia(this.video);
+          // An HLS ladder is the one case where we can switch rendition properly.
+          this.hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            const levels: Array<{ height?: number; bitrate?: number }> = this.hls?.levels ?? [];
+            if (!this.cb.onQualities || levels.length < 2) return;
+            this.cb.onQualities(
+              [
+                { id: 'auto', label: 'Auto' },
+                ...levels.map((l, i) => ({
+                  id: String(i),
+                  label: l.height ? `${l.height}p` : `${Math.round((l.bitrate ?? 0) / 1000)} kbps`,
+                })),
+              ],
+              'auto'
+            );
+          });
           this.hls.on(Hls.Events.ERROR, (_e: unknown, data: any) => {
             if (data?.fatal) this.cb.onError('The HLS stream stopped working');
           });
@@ -452,6 +527,12 @@ class HtmlAdapter implements Adapter {
   setVolume(v: number) { this.video.volume = Math.max(0, Math.min(1, v)); }
   setMuted(m: boolean) { this.video.muted = m; }
   setRate(r: number) { this.video.playbackRate = r; }
+
+  setQuality(id: string) {
+    // Only an HLS ladder has renditions; a plain file is a single stream.
+    if (!this.hls) return;
+    this.hls.currentLevel = id === 'auto' ? -1 : Number(id);
+  }
 
   destroy() {
     this.destroyed = true;

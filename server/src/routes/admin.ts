@@ -5,9 +5,10 @@ import path from 'path';
 import { z } from 'zod';
 import { config } from '../config';
 import { allSettings, db, setSetting } from '../db';
-import { hashPassword, requireAdmin } from '../auth';
+import { hashPassword, requireAdmin, revokeSessions } from '../auth';
 import { storageStats } from './uploads';
 import { activeLockouts, clearLockout } from '../services/rateLimit';
+import { forgetRoom, kickUser } from '../realtime';
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
@@ -177,6 +178,8 @@ adminRouter.patch('/users/:id', (req, res) => {
     d.newPassword ? hashPassword(d.newPassword) : target.password_hash,
     target.id
   );
+  // A reset or a suspension must kick the account out of any live session.
+  if (d.newPassword || d.isDisabled === true) revokeSessions(target.id);
   res.json({ ok: true });
 });
 
@@ -283,6 +286,8 @@ adminRouter.delete('/lockouts/:key', (req, res) => {
 });
 
 adminRouter.delete('/rooms/:id', (req, res) => {
+  kickUser(req.params.id, null, 'This room was deleted by an administrator');
   db.prepare('DELETE FROM rooms WHERE id = ?').run(req.params.id);
+  forgetRoom(req.params.id);
   res.json({ ok: true });
 });

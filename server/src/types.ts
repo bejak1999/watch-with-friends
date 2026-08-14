@@ -12,6 +12,7 @@ export interface UserRow {
   upload_quota_bytes: number | null;
   created_at: number;
   last_login_at: number | null;
+  token_version: number;
 }
 
 export interface PublicUser {

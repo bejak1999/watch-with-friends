@@ -5,6 +5,24 @@ import { useApp } from '../state/AppState';
 import { Brand, Field } from '../components/ui';
 import { formatCooldown, useCooldown } from '../hooks/useCooldown';
 
+/**
+ * `?next=` is attacker-controllable, so only same-site paths may be followed.
+ * One leading slash is not enough: browsers read "//evil.com" and "/\evil.com"
+ * as protocol-relative URLs and would happily leave the site.
+ */
+const PROTOCOL_RELATIVE = new RegExp('^/[/\\\\]');
+/** Anything outside printable ASCII - control characters, spaces, newlines. */
+const UNSAFE_IN_PATH = /[^!-~]/;
+
+export function safeNext(raw: string | null): string {
+  if (!raw) return '/';
+  const value = raw.trim();
+  if (!value.startsWith('/')) return '/';
+  if (PROTOCOL_RELATIVE.test(value)) return '/';
+  if (UNSAFE_IN_PATH.test(value)) return '/';
+  return value;
+}
+
 export function LoginPage() {
   const { setUser, siteName, registrationOpen } = useApp();
   const navigate = useNavigate();
@@ -24,8 +42,7 @@ export function LoginPage() {
       const data = await api.post<{ user: User }>('/auth/login', { username, password });
       cooldown.clear();
       setUser(data.user);
-      const next = params.get('next');
-      navigate(next && next.startsWith('/') ? next : '/', { replace: true });
+      navigate(safeNext(params.get('next')), { replace: true });
     } catch (err) {
       if (err instanceof ApiError && err.status === 429) {
         cooldown.start(err.retryAfter);

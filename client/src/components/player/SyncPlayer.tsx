@@ -1,8 +1,10 @@
 import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import type { PlaybackState, QueueItem } from '../../lib/api';
-import { createAdapter, type Adapter } from './adapters';
+import { createAdapter, type Adapter, type QualityOption } from './adapters';
 
 export interface SyncPlayerHandle {
+  /** Change the local rendition. Never synced - each viewer has their own line. */
+  setQuality(id: string): void;
   /** Local player position in seconds, used by the scrub bar. */
   getTime(): number;
   getDuration(): number;
@@ -25,6 +27,8 @@ interface Props {
   onDuration: (itemId: string, seconds: number) => void;
   onError: (message: string) => void;
   onReport: (position: number) => void;
+  /** Reports the resolutions this source can offer, once they are known. */
+  onQualities: (options: QualityOption[], activeId: string) => void;
 }
 
 /** Beyond this the player is jumped rather than nudged. */
@@ -34,7 +38,20 @@ const COARSE_SEEK_DRIFT = 1.2;
 const NUDGE_DRIFT = 0.35;
 
 export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlayer(
-  { item, playback, serverOffset, armed, volume, muted, onEnded, onBuffering, onDuration, onError, onReport },
+  {
+    item,
+    playback,
+    serverOffset,
+    armed,
+    volume,
+    muted,
+    onEnded,
+    onBuffering,
+    onDuration,
+    onError,
+    onReport,
+    onQualities,
+  },
   ref
 ) {
   const mountRef = useRef<HTMLDivElement>(null);
@@ -56,6 +73,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   useEffect(() => {
     setReady(false);
     setLoadError(null);
+    onQualities([], 'auto');
     driftRef.current = 0;
     reportedBuffering.current = false;
     onBuffering(false);
@@ -98,6 +116,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
         setLoadError(message);
         onError(message);
       },
+      onQualities: (options, activeId) => onQualities(options, activeId),
     });
 
     adapterRef.current = adapter;
@@ -201,6 +220,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   useImperativeHandle(
     ref,
     () => ({
+      setQuality: (id: string) => adapterRef.current?.setQuality?.(id),
       getTime: () => adapterRef.current?.getTime() ?? 0,
       getDuration: () => adapterRef.current?.getDuration() ?? 0,
       getDrift: () => driftRef.current,

@@ -33,6 +33,11 @@ export function verifyPassword(password: string, stored: string): boolean {
   }
 }
 
+/** Retires every session currently held for this account. */
+export function revokeSessions(userId: string): void {
+  db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id = ?').run(userId);
+}
+
 export function newId(bytes = 12): string {
   return crypto.randomBytes(bytes).toString('base64url');
 }
@@ -40,7 +45,10 @@ export function newId(bytes = 12): string {
 export const SESSION_COOKIE = 'wwf_session';
 
 export function issueSession(res: Response, userId: string, req: Request): void {
-  const token = jwt.sign({ sub: userId }, config.sessionSecret, {
+  const row = db.prepare('SELECT token_version FROM users WHERE id = ?').get(userId) as
+    | { token_version: number }
+    | undefined;
+  const token = jwt.sign({ sub: userId, tv: row?.token_version ?? 0 }, config.sessionSecret, {
     expiresIn: `${config.sessionDays}d`,
   });
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
@@ -79,10 +87,12 @@ export function toPublicUser(row: UserRow): PublicUser {
 export function userFromToken(token: string | undefined): PublicUser | null {
   if (!token) return null;
   try {
-    const payload = jwt.verify(token, config.sessionSecret) as { sub?: string };
+    const payload = jwt.verify(token, config.sessionSecret) as { sub?: string; tv?: number };
     if (!payload.sub) return null;
     const row = db.prepare('SELECT * FROM users WHERE id = ?').get(payload.sub) as UserRow | undefined;
     if (!row || row.is_disabled === 1) return null;
+    // A password change bumps token_version, retiring every older cookie.
+    if ((payload.tv ?? 0) !== (row.token_version ?? 0)) return null;
     return toPublicUser(row);
   } catch {
     return null;

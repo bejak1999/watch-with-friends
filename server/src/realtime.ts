@@ -23,7 +23,56 @@ import {
   shuffleQueue,
   writePlayback,
 } from './services/rooms';
+import { z } from 'zod';
 import type { MediaItem, PublicUser, RoomRole } from './types';
+
+/**
+ * Socket payloads arrive straight from a browser, so they get the same
+ * validation as the REST body. Without this a member could stuff arbitrary
+ * strings into the queue that every other viewer then renders and loads.
+ */
+const queueItemSchema = z.object({
+  source: z.enum(['youtube', 'vimeo', 'twitch', 'twitch_live', 'direct', 'upload']),
+  sourceId: z.string().min(1).max(2000),
+  url: z
+    .string()
+    .max(2000)
+    .refine(
+      (v) => !v || /^https?:\/\//i.test(v) || v.startsWith('/api/uploads/'),
+      'only http(s) links or uploads on this server can be queued'
+    )
+    .nullish(),
+  title: z.string().min(1).max(300),
+  author: z.string().max(200).nullish(),
+  duration: z.number().finite().min(0).max(86400 * 7).nullish(),
+  thumbnail: z
+    .string()
+    .max(1000)
+    .refine((v) => !v || /^https?:\/\//i.test(v), 'thumbnails must be http(s)')
+    .nullish(),
+});
+
+const queueAddSchema = z.object({
+  items: z.array(queueItemSchema).min(1).max(500),
+  atTop: z.boolean().optional(),
+  silent: z.boolean().optional(),
+});
+
+/** Cheap per-socket flood control for the chatty events. */
+class Bucket {
+  private hits: number[] = [];
+  constructor(
+    private limit: number,
+    private windowMs: number
+  ) {}
+  allow(): boolean {
+    const now = Date.now();
+    this.hits = this.hits.filter((t) => now - t < this.windowMs);
+    if (this.hits.length >= this.limit) return false;
+    this.hits.push(now);
+    return true;
+  }
+}
 
 let io: Server | null = null;
 
@@ -33,6 +82,8 @@ interface SocketState {
   buffering: boolean;
   reportedPosition: number;
   reportedAt: number;
+  chatBucket: Bucket;
+  queueBucket: Bucket;
 }
 
 const socketState = new WeakMap<Socket, SocketState>();
@@ -40,6 +91,47 @@ const socketState = new WeakMap<Socket, SocketState>();
 const autoPaused = new Map<string, boolean>();
 /** roomId -> timestamp of the last track change, used to swallow duplicate "ended". */
 const lastAdvance = new Map<string, number>();
+/** roomId -> pending "everyone left" freeze, cancelled if anybody comes back. */
+const emptyRoomTimers = new Map<string, NodeJS.Timeout>();
+
+/**
+ * A page reload, a phone locking its screen or a few seconds of bad signal all
+ * look exactly like the last viewer leaving. Freezing the room instantly meant
+ * coming back to a paused video that only a manual play would revive, so wait a
+ * little and let a reconnect cancel it.
+ */
+const EMPTY_ROOM_GRACE_MS = 45_000;
+
+function cancelEmptyRoomFreeze(roomId: string): void {
+  const timer = emptyRoomTimers.get(roomId);
+  if (timer) {
+    clearTimeout(timer);
+    emptyRoomTimers.delete(roomId);
+  }
+}
+
+function scheduleEmptyRoomFreeze(roomId: string): void {
+  cancelEmptyRoomFreeze(roomId);
+  const timer = setTimeout(() => {
+    emptyRoomTimers.delete(roomId);
+    // Somebody may have rejoined while we waited.
+    if (onlineUserIds(roomId).size > 0) return;
+    const room = roomById(roomId);
+    if (room?.is_playing === 1) {
+      writePlayback(roomId, { isPlaying: false });
+      emitPlayback(roomId);
+    }
+  }, EMPTY_ROOM_GRACE_MS);
+  timer.unref?.();
+  emptyRoomTimers.set(roomId, timer);
+}
+
+/** Frees per-room bookkeeping when a room goes away. */
+export function forgetRoom(roomId: string): void {
+  cancelEmptyRoomFreeze(roomId);
+  autoPaused.delete(roomId);
+  lastAdvance.delete(roomId);
+}
 
 /* ------------------------------------------------------------------ */
 /* Presence helpers                                                    */
@@ -319,7 +411,15 @@ export function initRealtime(httpServer: HttpServer): Server {
       next(new Error('unauthorised'));
       return;
     }
-    socketState.set(socket, { user, roomId: null, buffering: false, reportedPosition: 0, reportedAt: 0 });
+    socketState.set(socket, {
+      user,
+      roomId: null,
+      buffering: false,
+      reportedPosition: 0,
+      reportedAt: 0,
+      chatBucket: new Bucket(8, 5000),
+      queueBucket: new Bucket(12, 10000),
+    });
     next();
   });
 
@@ -378,6 +478,8 @@ export function initRealtime(httpServer: HttpServer): Server {
       state.roomId = roomId;
       state.buffering = false;
       socket.join(`room:${roomId}`);
+      // Somebody is watching again, so the room is not abandoned after all.
+      cancelEmptyRoomFreeze(roomId);
       db.prepare('UPDATE room_members SET last_seen_at = ? WHERE room_id = ? AND user_id = ?').run(
         Date.now(),
         roomId,
@@ -402,6 +504,7 @@ export function initRealtime(httpServer: HttpServer): Server {
       emitMembers(roomId);
       reconcileBuffering(roomId);
       if (!onlineUserIds(roomId).has(state.user.id)) systemMessageTo(roomId, `${state.user.displayName} left`);
+      if (onlineUserIds(roomId).size === 0) scheduleEmptyRoomFreeze(roomId);
     });
 
     /* ---------------- playback ---------------- */
@@ -496,18 +599,29 @@ export function initRealtime(httpServer: HttpServer): Server {
 
     /* ---------------- queue ---------------- */
 
-    socket.on('queue:add', (payload: { items?: MediaItem[]; atTop?: boolean; silent?: boolean }) => {
+    socket.on('queue:add', (payload: unknown) => {
       if (!guard('queue')) return;
+      if (!state.queueBucket.allow()) {
+        socket.emit('toast', { type: 'error', message: 'Slow down a moment - too many queue changes' });
+        return;
+      }
+      const parsed = queueAddSchema.safeParse(payload);
+      if (!parsed.success) {
+        socket.emit('toast', {
+          type: 'error',
+          message: parsed.error.issues[0]?.message || 'That item could not be added',
+        });
+        return;
+      }
       const room = currentRoom()!;
-      const items = Array.isArray(payload?.items) ? payload!.items!.slice(0, 500) : [];
-      if (items.length === 0) return;
+      const items = parsed.data.items as MediaItem[];
 
-      const created = addToQueue(room.id, state.user.id, items, Boolean(payload?.atTop));
+      const created = addToQueue(room.id, state.user.id, items, Boolean(parsed.data.atTop));
       const label =
         items.length === 1
           ? `${state.user.displayName} added "${items[0].title}"`
           : `${state.user.displayName} added ${items.length} videos`;
-      broadcastQueue(room.id, payload?.silent ? undefined : label);
+      broadcastQueue(room.id, parsed.data.silent ? undefined : label);
 
       // First thing in an empty room starts playing right away.
       if (!room.current_item_id && created[0]) selectItem(room.id, created[0].id, false);
@@ -564,6 +678,10 @@ export function initRealtime(httpServer: HttpServer): Server {
       if (!room) return;
       const body = String(payload?.body || '').trim().slice(0, 2000);
       if (!body) return;
+      if (!state.chatBucket.allow()) {
+        socket.emit('toast', { type: 'error', message: 'You are sending messages too quickly' });
+        return;
+      }
 
       const id = newId();
       const now = Date.now();
@@ -624,14 +742,9 @@ export function initRealtime(httpServer: HttpServer): Server {
       reconcileBuffering(roomId);
       if (!onlineUserIds(roomId).has(state.user.id)) {
         systemMessageTo(roomId, `${state.user.displayName} left`);
-        // Nobody left watching - freeze the room where it is.
-        if (onlineUserIds(roomId).size === 0) {
-          const room = roomById(roomId);
-          if (room?.is_playing === 1) {
-            writePlayback(roomId, { isPlaying: false });
-          }
-        }
       }
+      // Freeze an abandoned room, but only if it stays abandoned.
+      if (onlineUserIds(roomId).size === 0) scheduleEmptyRoomFreeze(roomId);
     });
   });
 
