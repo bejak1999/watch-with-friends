@@ -124,7 +124,16 @@ done
 YOUTUBE_API_KEY=$(ask "YouTube API key (optional, can be added in the UI later)" "")
 TZ_VALUE=$(ask "Timezone" "${TZ:-Europe/Berlin}")
 
-DATA_PATH=$(ask "Data directory (host path, or 'volume' for a Docker volume)" "volume")
+# Compose can only mount a named volume it declares, so anything other than the
+# built-in "wwf-data" has to be an absolute host path.
+while true; do
+  DATA_PATH=$(ask "Data directory (absolute host path, or 'volume' for a Docker volume)" "volume")
+  case "$DATA_PATH" in
+    volume|wwf-data) DATA_PATH="volume"; break ;;
+    /*)              break ;;
+    *)               warn "give an absolute path starting with / - or 'volume'" ;;
+  esac
+done
 
 SESSION_SECRET=$(random_secret)
 

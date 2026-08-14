@@ -26,6 +26,7 @@ services:
       SESSION_DAYS: "30"
       TZ: "${TZ:-Europe/Berlin}"
     volumes:
+      # Either the literal "wwf-data" (declared below) or an ABSOLUTE host path.
       - "${DATA_PATH:-wwf-data}:/data"
     healthcheck:
       test:
