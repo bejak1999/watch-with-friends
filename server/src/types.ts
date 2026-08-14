@@ -1,4 +1,4 @@
-export type MediaSource = 'youtube' | 'vimeo' | 'twitch' | 'twitch_live' | 'direct' | 'upload';
+export type MediaSource = 'youtube' | 'vimeo' | 'twitch' | 'twitch_live' | 'ard' | 'direct' | 'upload';
 
 export interface UserRow {
   id: string;
@@ -13,6 +13,7 @@ export interface UserRow {
   created_at: number;
   last_login_at: number | null;
   token_version: number;
+  avatar_updated_at: number | null;
 }
 
 export interface PublicUser {
@@ -21,6 +22,7 @@ export interface PublicUser {
   displayName: string;
   isAdmin: boolean;
   avatarColor: string;
+  avatarUrl: string | null;
   prefs: Record<string, unknown>;
   createdAt: number;
 }

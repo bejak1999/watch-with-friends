@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, type StorageStats, type User } from '../lib/api';
 import { ACCENTS, useApp, type Density, type ThemeName } from '../state/AppState';
 import { Avatar, Field, Icon, Meter } from '../components/ui';
+import { AvatarPicker } from '../components/AvatarPicker';
 import { formatBytes } from '../lib/format';
 
 const THEMES: Array<{ id: ThemeName; label: string; colors: [string, string, string] }> = [
@@ -151,8 +152,13 @@ export function SettingsPage() {
       {/* ---- profile ---- */}
       <section className="panel">
         <h2>Profile</h2>
+        <AvatarPicker
+          user={{ id: user.id, displayName: displayName || user.username, avatarColor, avatarUrl: user.avatarUrl }}
+          onChanged={(avatarUrl) => setUser({ ...user, avatarUrl })}
+        />
+        <hr className="divider" />
         <div className="row" style={{ gap: 14 }}>
-          <Avatar name={displayName || user.username} color={avatarColor} size="lg" />
+          <Avatar name={displayName || user.username} color={avatarColor} url={user.avatarUrl} size="lg" />
           <div className="grow col" style={{ gap: 10 }}>
             <Field label="Display name">
               <input
@@ -162,7 +168,7 @@ export function SettingsPage() {
                 maxLength={32}
               />
             </Field>
-            <Field label="Avatar colour">
+            <Field label="Fallback colour" hint="Used for your initials when no picture is set">
               <div className="swatches">
                 {ACCENTS.map((c) => (
                   <button

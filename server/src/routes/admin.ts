@@ -9,6 +9,7 @@ import { hashPassword, requireAdmin, revokeSessions } from '../auth';
 import { storageStats } from './uploads';
 import { activeLockouts, clearLockout } from '../services/rateLimit';
 import { forgetRoom, kickUser } from '../realtime';
+import { deleteAvatarFiles } from './avatars';
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
@@ -125,6 +126,7 @@ adminRouter.get('/users', (_req, res) => {
       isAdmin: r.is_admin === 1,
       isDisabled: r.is_disabled === 1,
       avatarColor: r.avatar_color,
+      avatarUrl: r.avatar_updated_at ? `/api/users/${r.id}/avatar?v=${r.avatar_updated_at}` : null,
       createdAt: r.created_at,
       lastLoginAt: r.last_login_at,
       storageUsed: r.storage_used,
@@ -192,6 +194,7 @@ adminRouter.delete('/users/:id', (req, res) => {
     stored_name: string;
   }>;
   db.prepare('DELETE FROM users WHERE id = ?').run(req.params.id);
+  deleteAvatarFiles(req.params.id);
   for (const u of uploads) {
     fs.promises.unlink(path.join(config.uploadDir, path.basename(u.stored_name))).catch(() => undefined);
   }

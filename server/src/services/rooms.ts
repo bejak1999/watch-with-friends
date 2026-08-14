@@ -1,5 +1,5 @@
 import { db, getSettingNumber } from '../db';
-import { newId } from '../auth';
+import { avatarUrlFor, newId } from '../auth';
 import type { MediaItem, PublicUser, QueueItemRow, RoomRole, RoomRow } from '../types';
 
 export interface QueueItemDTO {
@@ -368,7 +368,8 @@ export function recentMessages(roomId: string, limit?: number) {
   const max = limit ?? Math.max(20, getSettingNumber('chat_history_limit') || 200);
   const rows = db
     .prepare(
-      `SELECT m.id, m.user_id, m.kind, m.body, m.created_at, u.display_name, u.avatar_color
+      `SELECT m.id, m.user_id, m.kind, m.body, m.created_at, u.display_name, u.avatar_color,
+              u.avatar_updated_at
        FROM messages m LEFT JOIN users u ON u.id = m.user_id
        WHERE m.room_id = ? ORDER BY m.created_at DESC LIMIT ?`
     )
@@ -380,6 +381,7 @@ export function recentMessages(roomId: string, limit?: number) {
     created_at: number;
     display_name: string | null;
     avatar_color: string | null;
+    avatar_updated_at: number | null;
   }>;
 
   return rows.reverse().map((r) => ({
@@ -390,13 +392,15 @@ export function recentMessages(roomId: string, limit?: number) {
     createdAt: r.created_at,
     displayName: r.display_name,
     avatarColor: r.avatar_color,
+    avatarUrl: r.user_id ? avatarUrlFor(r.user_id, r.avatar_updated_at) : null,
   }));
 }
 
 export function memberList(roomId: string) {
   return db
     .prepare(
-      `SELECT m.user_id, m.role, m.joined_at, m.last_seen_at, m.banned, u.display_name, u.username, u.avatar_color
+      `SELECT m.user_id, m.role, m.joined_at, m.last_seen_at, m.banned, u.display_name, u.username,
+              u.avatar_color, u.avatar_updated_at
        FROM room_members m JOIN users u ON u.id = m.user_id
        WHERE m.room_id = ? ORDER BY
          CASE m.role WHEN 'owner' THEN 0 WHEN 'host' THEN 1 ELSE 2 END, u.display_name COLLATE NOCASE`
@@ -410,5 +414,6 @@ export function memberList(roomId: string) {
     display_name: string;
     username: string;
     avatar_color: string;
+    avatar_updated_at: number | null;
   }>;
 }

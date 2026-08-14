@@ -437,16 +437,20 @@ class HtmlAdapter implements Adapter {
   private hls: any = null;
   private destroyed = false;
 
+  private src = '';
+
   constructor(
     private mount: HTMLElement,
-    private src: string,
+    /** A promise lets the ARD resolver hand us a fresh CDN link. */
+    private source: string | Promise<string>,
     private cb: AdapterCallbacks
   ) {
     this.video = document.createElement('video');
     this.video.playsInline = true;
     this.video.preload = 'auto';
     this.video.controls = false;
-    this.video.crossOrigin = 'anonymous';
+    // Deliberately no crossOrigin: plain playback never needs it, and asking
+    // for CORS breaks every CDN that does not send the headers back.
     this.video.style.width = '100%';
     this.video.style.height = '100%';
     this.video.style.objectFit = 'contain';
@@ -471,13 +475,21 @@ class HtmlAdapter implements Adapter {
   }
 
   private async attach() {
-    const isHls = /\.m3u8(\?|#|$)/i.test(this.src);
-    const nativeHls = this.video.canPlayType('application/vnd.apple.mpegurl') !== '';
+    try {
+      this.src = typeof this.source === 'string' ? this.source : await this.source;
+    } catch (err) {
+      this.cb.onError(err instanceof Error ? err.message : 'Could not resolve that stream');
+      return;
+    }
+    if (this.destroyed || !this.src) return;
 
-    // Same-origin uploads must send the session cookie; anonymous CORS would drop it.
-    if (this.src.startsWith('/')) this.video.crossOrigin = null as unknown as string;
+    const isHls = /\.m3u8(\?|#|$)/i.test(this.src) || /\/i\/.*\.csmil/i.test(this.src);
 
-    if (isHls && !nativeHls) {
+    // Prefer hls.js wherever Media Source Extensions exist, even if the browser
+    // claims native HLS: only hls.js exposes the rendition ladder, which is what
+    // the resolution picker drives. iOS has no MSE for this and falls through to
+    // the native player below.
+    if (isHls) {
       try {
         const Hls = (await import('hls.js')).default;
         if (this.destroyed) return;
@@ -552,6 +564,15 @@ class HtmlAdapter implements Adapter {
 /* Factory                                                           */
 /* ---------------------------------------------------------------- */
 
+async function resolveArdStream(id: string): Promise<string> {
+  const res = await fetch(`/api/media/ard/${encodeURIComponent(id)}`, { credentials: 'same-origin' });
+  const data = await res.json().catch(() => null);
+  if (!res.ok || !data?.url) {
+    throw new Error(data?.error || 'The ARD Mediathek stream could not be loaded');
+  }
+  return data.url as string;
+}
+
 export function createAdapter(mount: HTMLElement, item: QueueItem, cb: AdapterCallbacks): Adapter {
   switch (item.source) {
     case 'youtube':
@@ -564,6 +585,9 @@ export function createAdapter(mount: HTMLElement, item: QueueItem, cb: AdapterCa
       return new TwitchAdapter(mount, item.sourceId, true, cb);
     case 'upload':
       return new HtmlAdapter(mount, item.url || `/api/uploads/${item.sourceId}/file`, cb);
+    case 'ard':
+      // Signed CDN links expire, so ask the server for a fresh one each time.
+      return new HtmlAdapter(mount, resolveArdStream(item.sourceId), cb);
     default:
       return new HtmlAdapter(mount, item.url || item.sourceId, cb);
   }

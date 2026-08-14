@@ -46,6 +46,7 @@ const SOURCE_LABELS: Record<string, string> = {
   vimeo: 'Vimeo',
   twitch: 'Twitch',
   twitch_live: 'Twitch Live',
+  ard: 'ARD Mediathek',
   direct: 'Direct link',
   upload: 'Uploaded',
 };
@@ -59,6 +60,7 @@ const SOURCE_ICONS: Record<string, string> = {
   vimeo: 'V',
   twitch: 'T',
   twitch_live: '●',
+  ard: '📺',
   direct: '⇢',
   upload: '⬆',
 };

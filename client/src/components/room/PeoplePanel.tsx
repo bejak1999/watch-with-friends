@@ -41,7 +41,7 @@ export function PeoplePanel({ room, members, myUserId, roomPosition, onChanged }
     return (
       <div className={`person${m.online ? '' : ' offline'}`} key={m.userId}>
         <div style={{ position: 'relative' }}>
-          <Avatar name={m.displayName} color={m.avatarColor} />
+          <Avatar name={m.displayName} color={m.avatarColor} url={m.avatarUrl} />
           <span
             className="dot"
             style={{

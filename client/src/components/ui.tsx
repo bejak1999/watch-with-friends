@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode, CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { initials } from '../lib/format';
@@ -95,13 +95,34 @@ export function Brand({ large, name = 'Watch With Friends' }: { large?: boolean;
 export function Avatar({
   name,
   color,
+  url,
   size = 'md',
 }: {
   name: string;
   color: string;
+  /** Profile picture; initials are the fallback. */
+  url?: string | null;
   size?: 'sm' | 'md' | 'lg';
 }) {
   const cls = size === 'md' ? 'avatar' : `avatar ${size}`;
+  const [broken, setBroken] = useState(false);
+
+  // A deleted picture should degrade to initials, not a broken image icon.
+  useEffect(() => setBroken(false), [url]);
+
+  if (url && !broken) {
+    return (
+      <img
+        className={cls}
+        src={url}
+        alt={name}
+        title={name}
+        loading="lazy"
+        onError={() => setBroken(true)}
+        style={{ objectFit: 'cover', background: color }}
+      />
+    );
+  }
   return (
     <span className={cls} style={{ background: color }} title={name}>
       {initials(name)}

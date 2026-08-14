@@ -10,7 +10,7 @@ export const playlistsRouter = Router();
 playlistsRouter.use(requireAuth);
 
 const itemSchema = z.object({
-  source: z.enum(['youtube', 'vimeo', 'twitch', 'twitch_live', 'direct', 'upload']),
+  source: z.enum(['youtube', 'vimeo', 'twitch', 'twitch_live', 'ard', 'direct', 'upload']),
   sourceId: z.string().min(1).max(2000),
   url: z.string().max(2000).nullish(),
   title: z.string().min(1).max(300),

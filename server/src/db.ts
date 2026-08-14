@@ -161,6 +161,11 @@ MIGRATIONS.push((d) => {
   d.exec(`ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0;`);
 });
 
+MIGRATIONS.push((d) => {
+  // Timestamp doubles as a cache buster: /api/users/<id>/avatar?v=<this>.
+  d.exec(`ALTER TABLE users ADD COLUMN avatar_updated_at INTEGER;`);
+});
+
 export function migrate(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {

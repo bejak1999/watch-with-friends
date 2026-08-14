@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { getSetting } from '../db';
 import { isSafeToFetch } from './ssrf';
+import { parseArdId, pickBestStream, resolveArdItem } from './ard';
 import type { MediaItem } from '../types';
 
 export function youtubeApiKey(): string {
@@ -20,7 +21,15 @@ export class MediaError extends Error {
 /* ------------------------------------------------------------------ */
 
 export interface ParsedUrl {
-  kind: 'youtube_video' | 'youtube_playlist' | 'vimeo' | 'twitch_vod' | 'twitch_channel' | 'direct' | 'unknown';
+  kind:
+    | 'youtube_video'
+    | 'youtube_playlist'
+    | 'vimeo'
+    | 'twitch_vod'
+    | 'twitch_channel'
+    | 'ard'
+    | 'direct'
+    | 'unknown';
   id: string;
   /** Present when a YouTube watch URL also carries a ?list= parameter. */
   playlistId?: string;
@@ -63,6 +72,12 @@ export function parseMediaUrl(raw: string): ParsedUrl {
     }
     if (parts[0] === 'playlist' && list) return { kind: 'youtube_playlist', id: list, url: trimmed };
     if (list) return { kind: 'youtube_playlist', id: list, url: trimmed };
+  }
+
+  // ---- ARD Mediathek ----
+  if (host.endsWith('ardmediathek.de')) {
+    const ardId = parseArdId(trimmed);
+    if (ardId) return { kind: 'ard', id: ardId, url: trimmed, startSeconds };
   }
 
   // ---- Vimeo ----
@@ -428,6 +443,23 @@ export async function resolveMediaUrl(raw: string, mode: 'auto' | 'playlist' | '
       if (mode === 'single') throw new MediaError('That link points at a playlist, not a single video');
       const pl = await resolveYoutubePlaylist(parsed.id);
       return { items: pl.items, playlistTitle: pl.title };
+    }
+    case 'ard': {
+      const item = await resolveArdItem(parsed.id);
+      return {
+        items: [
+          {
+            source: 'ard',
+            sourceId: item.id,
+            // Resolved fresh at play time; the CDN path is signed.
+            url: null,
+            title: item.title,
+            author: item.show,
+            duration: item.duration,
+            thumbnail: item.thumbnail,
+          },
+        ],
+      };
     }
     case 'vimeo':
       return { items: [await resolveVimeo(parsed.id)] };

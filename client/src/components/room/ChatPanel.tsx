@@ -93,7 +93,7 @@ export function ChatPanel({ messages, typingUsers, myUserId, actions }: Props) {
                 {grouped ? (
                   <span className="spacer" />
                 ) : (
-                  <Avatar name={msg.displayName || '?'} color={msg.avatarColor || '#666'} />
+                  <Avatar name={msg.displayName || '?'} color={msg.avatarColor || '#666'} url={msg.avatarUrl} />
                 )}
                 <div className="chat-body">
                   {!grouped && (

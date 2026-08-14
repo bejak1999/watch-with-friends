@@ -356,6 +356,37 @@ img { display: block; max-width: 100%; }
 }
 .avatar.sm { width: 24px; height: 24px; font-size: 0.66rem; }
 .avatar.lg { width: 44px; height: 44px; font-size: 1rem; }
+/* The picture variant is an <img>, which must not stretch. */
+img.avatar { object-fit: cover; }
+
+.avatar-drop {
+  position: relative;
+  padding: 0;
+  border: 0;
+  background: none;
+  border-radius: 50%;
+  cursor: pointer;
+  flex: none;
+  line-height: 0;
+}
+.avatar-drop .avatar { width: 68px; height: 68px; font-size: 1.4rem; }
+.avatar-drop-overlay {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 7, 10, 0.55);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.15s var(--ease);
+}
+.avatar-drop:hover .avatar-drop-overlay,
+.avatar-drop:focus-visible .avatar-drop-overlay,
+.avatar-drop[data-over='true'] .avatar-drop-overlay { opacity: 1; }
+.avatar-drop[data-over='true'] { box-shadow: 0 0 0 3px var(--accent); }
+.avatar-drop:disabled { cursor: wait; }
+.avatar-drop:disabled .avatar-drop-overlay { opacity: 1; }
 
 .spinner {
   width: 18px; height: 18px;
@@ -727,6 +758,18 @@ img { display: block; max-width: 100%; }
 .now-playing { display: flex; align-items: center; gap: 10px; min-width: 0; }
 
 /* The control row must never clip a button - wrap to a second line instead. */
+/* The stage column must never let a long room name push the layout sideways. */
+.stage-col { overflow-x: clip; }
+.room-header { min-width: 0; }
+/* A flex-basis rather than 0 makes the action buttons wrap to their own line
+   once the title would be squeezed below a readable width. */
+.room-header .room-title-block { flex: 1 1 240px; min-width: 0; }
+.room-header .room-header-actions { flex: 0 0 auto; }
+/* The title takes the leftover space and ellipsises; badges keep their size.
+   Without flex-grow it collapses to zero width next to them. */
+.room-header h2 { flex: 1 1 auto; min-width: 0; }
+.room-header .tag { flex: none; }
+
 .control-row { flex-wrap: wrap; row-gap: 8px; }
 .control-row .transport { flex: 0 0 auto; }
 .control-row .secondary-controls { flex: 0 0 auto; margin-left: auto; }
@@ -1129,18 +1172,27 @@ img { display: block; max-width: 100%; }
   .stage { border-radius: 0; border-left: 0; border-right: 0; border-top: 0; }
   .stage-col { gap: 0; }
   .controls { border-radius: 0; border-left: 0; border-right: 0; }
+  /* Full-bleed stage, but text still needs a margin from the screen edge. */
+  .room-header { padding: 10px 12px 0; }
   .side { border-radius: 0; border-left: 0; border-right: 0; min-height: 60vh; }
   .theme-options { grid-template-columns: 1fr; }
 }
 
-/* Phone-sized control bar: keep transport + fullscreen, shed what does not fit. */
+/* Phone-sized control bar: wrap to a second line rather than clipping. */
 @media (max-width: 760px) {
   .hide-sm { display: none !important; }
-  /* Phones have hardware volume keys; the slider only steals room. */
-  .volume { display: none; }
   .control-row .now-playing { display: none; }
   .control-row .transport { flex: 1 1 auto; }
-  .control-row .secondary-controls { flex: 0 0 auto; }
+  /* This group must wrap internally too, or the last button (fullscreen) is
+     pushed past the screen edge as soon as another control appears. */
+  .control-row .secondary-controls {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+  /* The slider shares the row, so it shrinks instead of disappearing. */
+  .volume { width: auto; flex: 1 1 50px; min-width: 44px; max-width: 110px; }
   .controls { padding: 8px 10px; }
 }
 

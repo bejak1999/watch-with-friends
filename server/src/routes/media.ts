@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth';
 import { MediaError, resolveMediaUrl, resolveYoutubePlaylist, searchYoutube, youtubeApiKey } from '../services/media';
+import { pickBestStream, resolveArdItem } from '../services/ard';
 
 export const mediaRouter = Router();
 mediaRouter.use(requireAuth);
@@ -48,6 +49,24 @@ mediaRouter.get('/youtube-playlist/:id', async (req, res) => {
   } catch (err) {
     const status = err instanceof MediaError ? err.status : 500;
     res.status(status).json({ error: err instanceof Error ? err.message : 'Import failed' });
+  }
+});
+
+/** Fresh stream URL for a queued ARD item, resolved when playback starts. */
+mediaRouter.get('/ard/:id', async (req, res) => {
+  try {
+    const item = await resolveArdItem(req.params.id);
+    const stream = pickBestStream(item.streams);
+    res.json({
+      url: stream.url,
+      mimeType: stream.mimeType,
+      title: item.title,
+      duration: item.duration,
+      thumbnail: item.thumbnail,
+    });
+  } catch (err) {
+    const status = err instanceof MediaError ? err.status : 500;
+    res.status(status).json({ error: err instanceof Error ? err.message : 'Could not load that programme' });
   }
 });
 

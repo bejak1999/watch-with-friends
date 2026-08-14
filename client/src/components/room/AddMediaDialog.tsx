@@ -188,7 +188,8 @@ function LinkTab({ onAdd }: { onAdd: (items: MediaItem[], atTop?: boolean) => vo
           </div>
           <div className="row" style={{ gap: 8 }}>
             <button className="btn primary grow" onClick={() => onAdd(items)}>
-              <Icon name="plus" size={15} /> Add {items.length > 1 ? `all ${items.length}` : ''} to queue
+              <Icon name="plus" size={15} />{' '}
+              {items.length > 1 ? `Add all ${items.length} to queue` : 'Add to queue'}
             </button>
             <button className="btn" onClick={() => onAdd(items, true)} title="Insert before everything else">
               Play next
@@ -280,7 +281,8 @@ function SearchTab({ enabled, onAdd }: { enabled: boolean; onAdd: (items: MediaI
             ))}
           </div>
           <button className="btn primary" onClick={() => onAdd(chosen)} disabled={chosen.length === 0}>
-            <Icon name="plus" size={15} /> Add {chosen.length || ''} to queue
+            <Icon name="plus" size={15} />{' '}
+            {chosen.length > 0 ? `Add ${chosen.length} to queue` : 'Add to queue'}
           </button>
         </>
       )}

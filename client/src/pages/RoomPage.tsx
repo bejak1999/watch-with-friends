@@ -377,10 +377,11 @@ export function RoomPage() {
         </div>
 
         {/* ---- room header ---- */}
-        <div className="row between" style={{ padding: theater ? '0 16px' : 0, gap: 10, flexWrap: 'wrap' }}>
-          <div style={{ minWidth: 0 }}>
-            <div className="row" style={{ gap: 8 }}>
-              <h2 className="truncate">{room.name}</h2>
+        <div className="row between room-header" style={{ gap: 10, flexWrap: 'wrap' }}>
+          <div className="room-title-block">
+            {/* min-width:0 all the way down, or the h2 refuses to truncate. */}
+            <div className="row" style={{ gap: 8, minWidth: 0 }}>
+              <h2 className="truncate" style={{ minWidth: 0 }}>{room.name}</h2>
               <span className="tag">
                 <Icon name={room.isPublic ? 'globe' : 'lock'} size={11} />
                 {room.isPublic ? 'Public' : 'Invite only'}
@@ -389,7 +390,7 @@ export function RoomPage() {
             </div>
             {room.topic && <div className="tiny faint truncate">{room.topic}</div>}
           </div>
-          <div className="row" style={{ gap: 6 }}>
+          <div className="row room-header-actions" style={{ gap: 6 }}>
             <CopyButton value={`${window.location.origin}/join/${room.inviteToken}`} label="Invite link" />
             {room.permissions.canManage && (
               <button className="btn sm" onClick={() => setSettingsOpen(true)}>

@@ -1,7 +1,7 @@
 import type { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import { db, getSettingNumber } from './db';
-import { SESSION_COOKIE, newId, userFromToken } from './auth';
+import { SESSION_COOKIE, avatarUrlFor, newId, userFromToken } from './auth';
 import {
   addToQueue,
   canControl,
@@ -32,7 +32,7 @@ import type { MediaItem, PublicUser, RoomRole } from './types';
  * strings into the queue that every other viewer then renders and loads.
  */
 const queueItemSchema = z.object({
-  source: z.enum(['youtube', 'vimeo', 'twitch', 'twitch_live', 'direct', 'upload']),
+  source: z.enum(['youtube', 'vimeo', 'twitch', 'twitch_live', 'ard', 'direct', 'upload']),
   sourceId: z.string().min(1).max(2000),
   url: z
     .string()
@@ -237,6 +237,7 @@ function membersPayload(roomId: string) {
     username: m.username,
     displayName: m.display_name,
     avatarColor: m.avatar_color,
+    avatarUrl: avatarUrlFor(m.user_id, m.avatar_updated_at),
     role: m.role,
     banned: m.banned === 1,
     online: online.has(m.user_id),
@@ -703,6 +704,7 @@ export function initRealtime(httpServer: HttpServer): Server {
           createdAt: now,
           displayName: state.user.displayName,
           avatarColor: state.user.avatarColor,
+          avatarUrl: state.user.avatarUrl,
         },
       });
     });

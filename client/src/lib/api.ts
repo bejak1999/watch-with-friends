@@ -70,7 +70,7 @@ export const api = {
 /* Shared types                                                      */
 /* ---------------------------------------------------------------- */
 
-export type MediaSourceKind = 'youtube' | 'vimeo' | 'twitch' | 'twitch_live' | 'direct' | 'upload';
+export type MediaSourceKind = 'youtube' | 'vimeo' | 'twitch' | 'twitch_live' | 'ard' | 'direct' | 'upload';
 
 export interface MediaItem {
   source: MediaSourceKind;
@@ -96,6 +96,7 @@ export interface User {
   displayName: string;
   isAdmin: boolean;
   avatarColor: string;
+  avatarUrl: string | null;
   prefs: Record<string, unknown>;
   createdAt: number;
 }
@@ -150,6 +151,7 @@ export interface Member {
   username: string;
   displayName: string;
   avatarColor: string;
+  avatarUrl: string | null;
   role: 'owner' | 'host' | 'member';
   banned: boolean;
   online: boolean;
@@ -165,6 +167,7 @@ export interface ChatMessage {
   createdAt: number;
   displayName: string | null;
   avatarColor: string | null;
+  avatarUrl: string | null;
 }
 
 export interface PlaylistSummary {

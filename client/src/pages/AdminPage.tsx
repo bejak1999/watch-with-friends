@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { useApp } from '../state/AppState';
-import { CopyButton, Field, Icon, Meter, Modal, Spinner, Toggle } from '../components/ui';
+import { Avatar, CopyButton, Field, Icon, Meter, Modal, Spinner, Toggle } from '../components/ui';
+import { AvatarPicker } from '../components/AvatarPicker';
 import { formatBytes, relativeTime } from '../lib/format';
 
 type Tab = 'overview' | 'codes' | 'users' | 'settings';
@@ -26,6 +27,7 @@ interface AdminUser {
   isAdmin: boolean;
   isDisabled: boolean;
   avatarColor: string;
+  avatarUrl: string | null;
   createdAt: number;
   lastLoginAt: number | null;
   storageUsed: number;
@@ -474,9 +476,7 @@ function UsersTab() {
               <tr key={u.id} style={u.isDisabled ? { opacity: 0.55 } : undefined}>
                 <td>
                   <div className="row" style={{ gap: 8 }}>
-                    <span className="avatar sm" style={{ background: u.avatarColor }}>
-                      {u.displayName.slice(0, 2)}
-                    </span>
+                    <Avatar name={u.displayName} color={u.avatarColor} url={u.avatarUrl} size="sm" />
                     <div>
                       <div style={{ fontWeight: 550 }}>{u.displayName}</div>
                       <div className="tiny faint">@{u.username}</div>
@@ -654,6 +654,7 @@ function EditUserModal({
 }) {
   const { toast } = useApp();
   const [displayName, setDisplayName] = useState(user.displayName);
+  const [avatar, setAvatar] = useState(user.avatarUrl);
   const [isAdmin, setIsAdmin] = useState(user.isAdmin);
   const [customQuota, setCustomQuota] = useState(user.quotaBytes != null);
   const [quotaGb, setQuotaGb] = useState(user.quotaBytes != null ? user.quotaBytes / GB : 5);
@@ -690,6 +691,12 @@ function EditUserModal({
         </>
       }
     >
+      <AvatarPicker
+        user={{ id: user.id, displayName, avatarColor: user.avatarColor, avatarUrl: avatar }}
+        targetId={user.id}
+        onChanged={setAvatar}
+      />
+
       <Field label="Display name">
         <input className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} maxLength={32} />
       </Field>

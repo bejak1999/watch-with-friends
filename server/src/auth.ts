@@ -66,6 +66,11 @@ export function clearSession(res: Response): void {
   res.clearCookie(SESSION_COOKIE, { path: '/' });
 }
 
+/** Null when the user has not set a picture. The ?v= busts the browser cache. */
+export function avatarUrlFor(userId: string, updatedAt: number | null | undefined): string | null {
+  return updatedAt ? `/api/users/${userId}/avatar?v=${updatedAt}` : null;
+}
+
 export function toPublicUser(row: UserRow): PublicUser {
   let prefs: Record<string, unknown> = {};
   try {
@@ -79,6 +84,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     displayName: row.display_name,
     isAdmin: row.is_admin === 1,
     avatarColor: row.avatar_color,
+    avatarUrl: avatarUrlFor(row.id, row.avatar_updated_at),
     prefs,
     createdAt: row.created_at,
   };

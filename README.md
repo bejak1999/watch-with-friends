@@ -32,7 +32,8 @@ no random strangers. Just you, your friends, and a shared play button.
 | 👑 | **Host controls.** Let everyone drive, or lock playback and the queue to hosts. Promote, remove, or block people. |
 | 🛡️ | **Brute-force protection.** Three free mistakes, then every wrong password doubles the wait — 2s, 4s, 8s… up to 15 minutes. |
 | 🎨 | **Themes.** Dark, Midnight (OLED black) and Light, a pickable accent colour, and three densities — saved to your account. |
-| 🔍 | **Resolution control.** Pick a rendition for HLS, Vimeo and Twitch — your choice only, so a slow connection never drags anyone else down. |
+| 🖼️ | **Profile pictures.** Upload an avatar, cropped and resized in your browser. Admins can fix somebody else's. |
+| 🔍 | **Resolution control.** Pick a rendition for HLS, ARD, Vimeo and Twitch — your choice only, so a slow connection never drags anyone else down. |
 | 📱 | **Works on phones.** Responsive layout, fullscreen, keyboard shortcuts, and controls that adapt instead of clipping. |
 
 ## 📺 Supported sources
@@ -42,6 +43,7 @@ no random strangers. Just you, your friends, and a shared play button.
 | ▶️ **YouTube** | Videos, Shorts, and full playlist import |
 | 🔵 **Vimeo** | Public and embeddable videos |
 | 🟣 **Twitch** | VODs sync normally · live channels sync to the live edge |
+| 📺 **ARD Mediathek** | Paste a programme link — resolved to its HLS ladder, so the resolution picker works |
 | 🔗 **Direct links** | `.mp4` · `.webm` · `.mkv` · `.m3u8` (HLS) · audio files |
 | 📤 **Uploads** | Streamed from your own server, with admin-set storage quotas |
 

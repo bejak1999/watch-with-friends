@@ -38,7 +38,7 @@ export function Layout() {
 
       <div className="sidebar-footer">
         <div className="row" style={{ gap: 8, padding: '4px 6px' }}>
-          <Avatar name={user.displayName} color={user.avatarColor} />
+          <Avatar name={user.displayName} color={user.avatarColor} url={user.avatarUrl} />
           <div className="grow" style={{ minWidth: 0 }}>
             <div className="truncate" style={{ fontWeight: 600, fontSize: '0.87rem' }}>
               {user.displayName}
