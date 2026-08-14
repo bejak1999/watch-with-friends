@@ -526,6 +526,8 @@ function UsersTab() {
         </table>
       </div>
 
+      <LockoutsPanel />
+
       {editing && (
         <EditUserModal
           user={editing}
@@ -537,6 +539,107 @@ function UsersTab() {
         />
       )}
     </>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Login back-off                                                    */
+/* ---------------------------------------------------------------- */
+
+interface Lockout {
+  key: string;
+  kind: 'account' | 'address';
+  label: string;
+  failures: number;
+  lockedForMs: number;
+  lastFailureAt: number;
+}
+
+function LockoutsPanel() {
+  const { toast } = useApp();
+  const [lockouts, setLockouts] = useState<Lockout[] | null>(null);
+
+  const load = useCallback(() => {
+    api
+      .get<{ lockouts: Lockout[] }>('/admin/lockouts')
+      .then((r) => setLockouts(r.lockouts))
+      .catch(() => setLockouts([]));
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
+  }, [load]);
+
+  const unlock = async (key: string) => {
+    await api.del(`/admin/lockouts/${encodeURIComponent(key)}`);
+    toast('Unlocked', 'success');
+    load();
+  };
+
+  return (
+    <section className="panel">
+      <div className="row between">
+        <div>
+          <h2>Failed sign-ins</h2>
+          <p className="tiny faint">
+            Three mistakes are free, then each wrong attempt doubles the wait up to 15 minutes.
+            Counters clear on a successful sign-in, or after an hour of quiet.
+          </p>
+        </div>
+        <button className="btn sm" onClick={load}>
+          <Icon name="refresh" size={13} /> Refresh
+        </button>
+      </div>
+
+      {!lockouts ? (
+        <Spinner />
+      ) : lockouts.length === 0 ? (
+        <div className="tiny faint" style={{ padding: '10px 2px' }}>
+          Nothing to show — no recent failed attempts. ✅
+        </div>
+      ) : (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Target</th>
+                <th>Type</th>
+                <th>Failures</th>
+                <th>Status</th>
+                <th>Last try</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {lockouts.map((l) => (
+                <tr key={l.key}>
+                  <td className="mono small">{l.label}</td>
+                  <td>
+                    <span className="tag">{l.kind}</span>
+                  </td>
+                  <td>{l.failures}</td>
+                  <td>
+                    {l.lockedForMs > 0 ? (
+                      <span className="tag live">locked {Math.ceil(l.lockedForMs / 1000)}s</span>
+                    ) : (
+                      <span className="tag">cooling down</span>
+                    )}
+                  </td>
+                  <td className="faint tiny">{relativeTime(l.lastFailureAt)}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <button className="btn sm" onClick={() => unlock(l.key)}>
+                      Unlock
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
 

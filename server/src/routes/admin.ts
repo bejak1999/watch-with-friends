@@ -7,6 +7,7 @@ import { config } from '../config';
 import { allSettings, db, setSetting } from '../db';
 import { hashPassword, requireAdmin } from '../auth';
 import { storageStats } from './uploads';
+import { activeLockouts, clearLockout } from '../services/rateLimit';
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
@@ -266,6 +267,19 @@ adminRouter.get('/overview', (req, res) => {
     .all() as Array<Record<string, unknown>>;
 
   res.json({ counts, rooms, storage: storageStats(req.user!.id) });
+});
+
+/* ------------------------------------------------------------------ */
+/* Login back-off                                                      */
+/* ------------------------------------------------------------------ */
+
+adminRouter.get('/lockouts', (_req, res) => {
+  res.json({ lockouts: activeLockouts() });
+});
+
+adminRouter.delete('/lockouts/:key', (req, res) => {
+  clearLockout(decodeURIComponent(req.params.key));
+  res.json({ ok: true });
 });
 
 adminRouter.delete('/rooms/:id', (req, res) => {

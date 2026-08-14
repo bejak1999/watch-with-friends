@@ -1,8 +1,11 @@
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** Seconds to wait before retrying, sent with 429 responses. */
+  retryAfter?: number;
+  constructor(message: string, status: number, retryAfter?: number) {
     super(message);
     this.status = status;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -22,7 +25,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     data = null;
   }
   if (!res.ok) {
-    throw new ApiError(data?.error || `Request failed (${res.status})`, res.status);
+    throw new ApiError(
+      data?.error || `Request failed (${res.status})`,
+      res.status,
+      typeof data?.retryAfter === 'number' ? data.retryAfter : undefined
+    );
   }
   return data as T;
 }

@@ -142,6 +142,19 @@ MIGRATIONS.push((d) => {
   `);
 });
 
+MIGRATIONS.push((d) => {
+  d.exec(`
+    CREATE TABLE login_attempts (
+      key              TEXT PRIMARY KEY,
+      failures         INTEGER NOT NULL DEFAULT 0,
+      first_failure_at INTEGER NOT NULL,
+      last_failure_at  INTEGER NOT NULL,
+      locked_until     INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_login_attempts_last ON login_attempts(last_failure_at);
+  `);
+});
+
 export function migrate(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {

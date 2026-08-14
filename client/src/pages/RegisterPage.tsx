@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { api, type User } from '../lib/api';
+import { ApiError, api, type User } from '../lib/api';
 import { useApp } from '../state/AppState';
 import { Brand, Field, Icon } from '../components/ui';
+import { formatCooldown, useCooldown } from '../hooks/useCooldown';
+
+/** Codes are always 12 characters once separators are stripped. */
+const CODE_LENGTH = 12;
 
 export function RegisterPage() {
   const { setUser, siteName } = useApp();
@@ -17,11 +21,13 @@ export function RegisterPage() {
   const [codeReason, setCodeReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const cooldown = useCooldown();
 
-  // Validate the code as it is typed so people are not stuck guessing.
+  // Only check once a whole code has been entered. Validating half-typed codes
+  // would spend the server's back-off budget on the user's own keystrokes.
   useEffect(() => {
     const cleaned = code.replace(/[^a-zA-Z0-9]/g, '');
-    if (cleaned.length < 8) {
+    if (cleaned.length !== CODE_LENGTH) {
       setCodeState('idle');
       return;
     }
@@ -33,13 +39,21 @@ export function RegisterPage() {
           setCodeState(res.valid ? 'valid' : 'invalid');
           setCodeReason(res.reason || '');
         })
-        .catch(() => setCodeState('idle'));
-    }, 350);
+        .catch((err) => {
+          if (err instanceof ApiError && err.status === 429) {
+            cooldown.start(err.retryAfter);
+            setError(err.message);
+          }
+          setCodeState('idle');
+        });
+    }, 400);
     return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (cooldown.active) return;
     if (password !== confirm) {
       setError('The two passwords do not match');
       return;
@@ -48,10 +62,16 @@ export function RegisterPage() {
     setError(null);
     try {
       const data = await api.post<{ user: User }>('/auth/register', { code, username, password });
+      cooldown.clear();
       setUser(data.user);
       navigate('/', { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Registration failed');
+      if (err instanceof ApiError && err.status === 429) {
+        cooldown.start(err.retryAfter);
+        setError(err.message);
+      } else {
+        setError(err instanceof Error ? err.message : 'Registration failed');
+      }
     } finally {
       setBusy(false);
     }
@@ -68,7 +88,16 @@ export function RegisterPage() {
           </p>
         </div>
 
-        {error && <div className="form-error">{error}</div>}
+        {error && !cooldown.active && <div className="form-error">{error}</div>}
+
+        {cooldown.active && (
+          <div className="form-error">
+            <div style={{ fontWeight: 650 }}>Too many attempts with a bad code</div>
+            <div style={{ marginTop: 3 }}>
+              Try again in <strong className="mono">{formatCooldown(cooldown.remaining)}</strong>.
+            </div>
+          </div>
+        )}
 
         <Field
           label="Registration code"
@@ -145,8 +174,18 @@ export function RegisterPage() {
           />
         </Field>
 
-        <button className="btn primary block" type="submit" disabled={busy || codeState === 'invalid'}>
-          {busy ? <span className="spinner" /> : 'Create account'}
+        <button
+          className="btn primary block"
+          type="submit"
+          disabled={busy || codeState === 'invalid' || cooldown.active}
+        >
+          {busy ? (
+            <span className="spinner" />
+          ) : cooldown.active ? (
+            `Locked — ${formatCooldown(cooldown.remaining)}`
+          ) : (
+            'Create account'
+          )}
         </button>
 
         <p className="small muted" style={{ textAlign: 'center' }}>

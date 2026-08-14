@@ -29,6 +29,7 @@ no random strangers. Just you, your friends, and a shared play button.
 | 📋 | **Persistent queue + playlists.** Queues survive restarts. Save any queue as a playlist and drop it into any room later. |
 | 💬 | **Chat & presence.** See who's online, who's buffering, and how far off the room clock each person is. |
 | 👑 | **Host controls.** Let everyone drive, or lock playback and the queue to hosts. Promote, remove, or block people. |
+| 🛡️ | **Brute-force protection.** Three free mistakes, then every wrong password doubles the wait — 2s, 4s, 8s… up to 15 minutes. |
 | 🎨 | **Themes.** Dark, Midnight (OLED black) and Light, a pickable accent colour, and three densities — saved to your account. |
 | 📱 | **Works on phones.** Responsive layout, theater mode, fullscreen, keyboard shortcuts. |
 
@@ -271,6 +272,49 @@ Pasting normal video links works without one. A key unlocks **playlist import** 
 5. 📋 Paste it into **Admin → Settings → Integrations** (or set `YOUTUBE_API_KEY`)
 
 Free quota is 10,000 units/day ≈ 100 playlist imports or searches.
+
+---
+
+## 🛡️ Security
+
+Since this is exposed to the internet through your tunnel, a few things are worth
+knowing about.
+
+**Login back-off.** Credential guessing gets exponentially slower:
+
+| Failed attempts | Wait before the next try |
+|---|---|
+| 1 – 3 | none — typos are free |
+| 4 | 2 seconds |
+| 5 | 4 seconds |
+| 6 | 8 seconds |
+| 7 | 16 seconds |
+| … | doubling each time |
+| 13+ | capped at 15 minutes |
+
+- Counters live in SQLite, so **restarting the container does not reset them**.
+- Two independent counters guard each attempt: one keyed on the **account**, which
+  can't be forged, and one on the **caller's address**, which stops a single host
+  spraying many usernames. Rotating IPs does not unlock a targeted account.
+- A successful sign-in clears the counter; so does an hour of quiet.
+- The same back-off protects **registration-code guessing**, the code-validity
+  check, and the change-password form.
+- Locked yourself out? **Admin → Users → Failed sign-ins** lists every counter and
+  clears any of them instantly.
+
+**Client addresses behind a proxy.** `X-Forwarded-For` is attacker-controllable, so
+the address counter prefers `CF-Connecting-IP` (which Cloudflare overwrites at its
+edge) and otherwise takes the *right-most* forwarded hop — the one your own proxy
+appended — rather than the spoofable left-most one.
+
+**Passwords** are hashed with scrypt (N=16384, r=8, p=1) and a per-user random salt.
+Sessions are signed JWTs in an `httpOnly`, `SameSite=Lax` cookie, marked `Secure`
+whenever the request arrives over HTTPS.
+
+> [!TIP]
+> Want a second lock on the door? Put **Cloudflare Access** in front of the hostname
+> for email-based auth before anyone even reaches the login page. Just remember to
+> bypass `/socket.io`, or WebSocket upgrades get intercepted.
 
 ---
 

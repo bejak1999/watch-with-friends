@@ -11,9 +11,28 @@ import {
   toPublicUser,
   verifyPassword,
 } from '../auth';
+import {
+  checkLimit,
+  clearFailures,
+  formatRetry,
+  ipKey,
+  recordFailure,
+  userKey,
+  type LimitStatus,
+} from '../services/rateLimit';
 import type { UserRow } from '../types';
+import type { Response } from 'express';
 
 export const authRouter = Router();
+
+/** Uniform 429 so the client can render a countdown. */
+function tooManyAttempts(res: Response, status: LimitStatus): void {
+  const seconds = Math.ceil(status.retryAfterMs / 1000);
+  res.status(429).set('Retry-After', String(seconds)).json({
+    error: `Too many failed attempts. Try again in ${formatRetry(status.retryAfterMs)}.`,
+    retryAfter: seconds,
+  });
+}
 
 const AVATAR_COLORS = [
   '#7c5cff', '#f472b6', '#38bdf8', '#34d399', '#fbbf24',
@@ -53,6 +72,14 @@ authRouter.post('/register', (req, res) => {
     return;
   }
 
+  // Registration codes are secrets too, so guessing them backs off as well.
+  const limitKeys = [ipKey(req, 'register')];
+  const limit = checkLimit(limitKeys);
+  if (limit.blocked) {
+    tooManyAttempts(res, limit);
+    return;
+  }
+
   const { username, password } = parsed.data;
   const code = normaliseCode(parsed.data.code);
 
@@ -67,16 +94,25 @@ authRouter.post('/register', (req, res) => {
       }
     | undefined;
 
+  const rejectCode = (message: string) => {
+    const next = recordFailure(limitKeys);
+    if (next.blocked) {
+      tooManyAttempts(res, next);
+      return;
+    }
+    res.status(400).json({ error: message });
+  };
+
   if (!invite || invite.revoked === 1) {
-    res.status(400).json({ error: 'Unknown or revoked registration code' });
+    rejectCode('Unknown or revoked registration code');
     return;
   }
   if (invite.expires_at && invite.expires_at < Date.now()) {
-    res.status(400).json({ error: 'This registration code has expired' });
+    rejectCode('This registration code has expired');
     return;
   }
   if (invite.max_uses > 0 && invite.uses >= invite.max_uses) {
-    res.status(400).json({ error: 'This registration code has already been used' });
+    rejectCode('This registration code has already been used');
     return;
   }
 
@@ -100,6 +136,7 @@ authRouter.post('/register', (req, res) => {
   });
   tx();
 
+  clearFailures(limitKeys);
   issueSession(res, id, req);
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(id) as UserRow;
   res.json({ user: toPublicUser(row) });
@@ -111,8 +148,23 @@ authRouter.post('/login', (req, res) => {
     res.status(400).json({ error: 'Enter a username and password' });
     return;
   }
+
+  // Guard the account and the caller separately: the account key cannot be
+  // forged, the address key stops one host from spraying many usernames.
+  const keys = [userKey(parsed.data.username), ipKey(req, 'login')];
+  const limit = checkLimit(keys);
+  if (limit.blocked) {
+    tooManyAttempts(res, limit);
+    return;
+  }
+
   const row = db.prepare('SELECT * FROM users WHERE username = ?').get(parsed.data.username) as UserRow | undefined;
   if (!row || !verifyPassword(parsed.data.password, row.password_hash)) {
+    const next = recordFailure(keys);
+    if (next.blocked) {
+      tooManyAttempts(res, next);
+      return;
+    }
     res.status(401).json({ error: 'Wrong username or password' });
     return;
   }
@@ -120,6 +172,8 @@ authRouter.post('/login', (req, res) => {
     res.status(403).json({ error: 'This account has been disabled' });
     return;
   }
+
+  clearFailures(keys);
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(Date.now(), row.id);
   issueSession(res, row.id, req);
   res.json({ user: toPublicUser(row) });
@@ -134,22 +188,42 @@ authRouter.get('/me', (req, res) => {
   res.json({ user: req.user ?? null, registrationOpen: getSettingBool('registration_open') });
 });
 
-/** Lets the register screen show "code looks good" before the form is filled in. */
+/**
+ * Lets the register screen show "code looks good" before the form is filled in.
+ * This is a validity oracle, so it shares the registration back-off budget.
+ */
 authRouter.post('/check-code', (req, res) => {
+  const limitKeys = [ipKey(req, 'register')];
+  const limit = checkLimit(limitKeys);
+  if (limit.blocked) {
+    tooManyAttempts(res, limit);
+    return;
+  }
+
   const code = normaliseCode(String((req.body as { code?: string })?.code || ''));
   const invite = db.prepare('SELECT * FROM invite_codes WHERE code = ?').get(code) as
     | { expires_at: number | null; max_uses: number; uses: number; revoked: number }
     | undefined;
+
+  const invalid = (reason: string) => {
+    const next = recordFailure(limitKeys);
+    if (next.blocked) {
+      tooManyAttempts(res, next);
+      return;
+    }
+    res.json({ valid: false, reason });
+  };
+
   if (!invite || invite.revoked === 1) {
-    res.json({ valid: false, reason: 'Unknown code' });
+    invalid('Unknown code');
     return;
   }
   if (invite.expires_at && invite.expires_at < Date.now()) {
-    res.json({ valid: false, reason: 'Expired' });
+    invalid('Expired');
     return;
   }
   if (invite.max_uses > 0 && invite.uses >= invite.max_uses) {
-    res.json({ valid: false, reason: 'Already used' });
+    invalid('Already used');
     return;
   }
   res.json({ valid: true });
@@ -194,11 +268,26 @@ authRouter.post('/change-password', requireAuth, (req, res) => {
     res.status(400).json({ error: 'New password must be at least 8 characters' });
     return;
   }
+  // A stolen session should not become a password-guessing oracle either.
+  const limitKeys = [`pw:${req.user!.id}`];
+  const limit = checkLimit(limitKeys);
+  if (limit.blocked) {
+    tooManyAttempts(res, limit);
+    return;
+  }
+
   const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user!.id) as UserRow;
   if (!verifyPassword(parsed.data.currentPassword, row.password_hash)) {
+    const next = recordFailure(limitKeys);
+    if (next.blocked) {
+      tooManyAttempts(res, next);
+      return;
+    }
     res.status(403).json({ error: 'Current password is wrong' });
     return;
   }
+
+  clearFailures(limitKeys);
   db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(parsed.data.newPassword), row.id);
   // Re-issue so the cookie lifetime resets.
   issueSession(res, row.id, req);

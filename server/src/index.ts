@@ -13,6 +13,7 @@ import { playlistsRouter } from './routes/playlists';
 import { uploadsRouter } from './routes/uploads';
 import { adminRouter } from './routes/admin';
 import { initRealtime } from './realtime';
+import { sweepExpired } from './services/rateLimit';
 
 migrate();
 
@@ -77,6 +78,10 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 
 const server = http.createServer(app);
 initRealtime(server);
+
+// Decayed login counters are inert but would otherwise accumulate forever.
+sweepExpired();
+setInterval(sweepExpired, 60 * 60 * 1000).unref();
 
 server.listen(config.port, config.host, () => {
   console.log(`\n  Watch With Friends`);
