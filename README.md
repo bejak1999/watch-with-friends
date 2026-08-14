@@ -13,6 +13,7 @@ no random strangers. Just you, your friends, and a shared play button.
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-embedded-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Self-hosted](https://img.shields.io/badge/self--hosted-yes-8A2BE2?style=flat-square)
+[![Container image](https://img.shields.io/badge/ghcr.io-watch--with--friends-2496ED?style=flat-square&logo=github)](https://github.com/bejak1999/watch-with-friends/pkgs/container/watch-with-friends)
 
 </div>
 
@@ -51,6 +52,12 @@ no random strangers. Just you, your friends, and a shared play button.
 
 ## 🚀 Install
 
+| | Best for | Needs |
+|---|---|---|
+| **[A — guided script](#option-a--one-command-on-your-server-)** | first-time setup, walks you through everything | git + Docker |
+| **[B — prebuilt image](#option-b--pull-a-prebuilt-image-)** ⭐ | a NAS that shouldn't spend CPU compiling | Docker only |
+| **[C — plain compose](#option-c--plain-docker-compose-)** | you already know what you're doing | git + Docker |
+
 ### Option A — one command on your server ⚡
 
 ```bash
@@ -66,15 +73,15 @@ two minutes. Re-run it any time after `git pull` to update — it detects the ex
 
 ### Option B — pull a prebuilt image 🐳
 
-Every push to `main` builds a multi-stage image and publishes it to GitHub Container
-Registry, so your server never has to compile anything. Good for a NAS with a slow CPU.
+Every push to `main` publishes a ready-made image to GitHub Container Registry, so
+your server never compiles anything. Ideal for a NAS with a slow CPU. **No login, no
+token, no clone** — three commands and you're running:
 
 ```bash
 curl -O https://raw.githubusercontent.com/bejak1999/watch-with-friends/main/docker-compose.ghcr.yml
 curl -o .env https://raw.githubusercontent.com/bejak1999/watch-with-friends/main/.env.example
 
-# At minimum set SESSION_SECRET
-nano .env
+nano .env    # set SESSION_SECRET at minimum
 
 docker compose -f docker-compose.ghcr.yml up -d
 ```
@@ -85,13 +92,8 @@ docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-> [!NOTE]
-> GitHub publishes container packages as **private** even from a public repo. If
-> `docker pull` says *denied*, either make the package public once under
-> **Packages → watch-with-friends → Package settings → Change visibility**, or log in:
-> ```bash
-> echo <TOKEN_WITH_read:packages> | docker login ghcr.io -u bejak1999 --password-stdin
-> ```
+Pin a specific build instead of tracking `latest` by setting `IMAGE_TAG` in `.env` —
+every commit is tagged `sha-<short>`, and git tags like `v1.2.0` publish `1.2.0` too.
 
 ### Option C — plain Docker Compose 🔧
 
@@ -174,8 +176,8 @@ ingress:
    chown -R 1000:1000 /mnt/tank/apps/wwf
    ```
 2. **Apps → Discover Apps → Custom App**:
-   - **Image**: `ghcr.io/bejak1999/watch-with-friends:latest` (add your GHCR
-     credentials under *Image pull secrets*), or a locally built `watch-with-friends`
+   - **Image**: `ghcr.io/bejak1999/watch-with-friends:latest` — the package is
+     public, so leave *Image pull secrets* empty
    - **Port**: container `8080` → node port, e.g. `30080`
    - **Storage**: host path `/mnt/tank/apps/wwf` → mount path `/data`
    - **Environment**:
