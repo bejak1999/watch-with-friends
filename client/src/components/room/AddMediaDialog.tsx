@@ -12,15 +12,25 @@ interface Props {
   onAdd: (items: MediaItem[], atTop?: boolean) => void;
 }
 
+interface ProviderHint {
+  id: string;
+  label: string;
+  example?: string;
+}
+
 export function AddMediaDialog({ roomId, onClose, onAdd }: Props) {
   const { toast } = useApp();
   const [tab, setTab] = useState<Tab>('link');
   const [hasYoutubeApi, setHasYoutubeApi] = useState(false);
+  const [providers, setProviders] = useState<ProviderHint[]>([]);
 
   useEffect(() => {
     api
-      .get<{ youtubeApi: boolean }>('/media/capabilities')
-      .then((c) => setHasYoutubeApi(c.youtubeApi))
+      .get<{ youtubeApi: boolean; providers: ProviderHint[] }>('/media/capabilities')
+      .then((c) => {
+        setHasYoutubeApi(c.youtubeApi);
+        setProviders(c.providers ?? []);
+      })
       .catch(() => undefined);
   }, []);
 
@@ -46,7 +56,7 @@ export function AddMediaDialog({ roomId, onClose, onAdd }: Props) {
         </button>
       </div>
 
-      {tab === 'link' && <LinkTab onAdd={add} />}
+      {tab === 'link' && <LinkTab onAdd={add} providers={providers} />}
       {tab === 'search' && <SearchTab enabled={hasYoutubeApi} onAdd={add} />}
       {tab === 'upload' && <UploadTab onAdd={add} />}
       {tab === 'library' && <LibraryTab roomId={roomId} onDone={onClose} />}
@@ -104,7 +114,13 @@ function ItemRow({
 /* Link tab                                                          */
 /* ---------------------------------------------------------------- */
 
-function LinkTab({ onAdd }: { onAdd: (items: MediaItem[], atTop?: boolean) => void }) {
+function LinkTab({
+  onAdd,
+  providers,
+}: {
+  onAdd: (items: MediaItem[], atTop?: boolean) => void;
+  providers: ProviderHint[];
+}) {
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -138,7 +154,12 @@ function LinkTab({ onAdd }: { onAdd: (items: MediaItem[], atTop?: boolean) => vo
     <>
       <Field
         label="Paste a link"
-        hint="YouTube video or playlist · Vimeo · Twitch VOD or channel · direct .mp4/.webm/.m3u8"
+        hint={
+          // Built from the server's provider registry, so it stays truthful
+          // as sites are added.
+          ['YouTube (video or playlist)', 'Vimeo', 'Twitch', ...providers.map((p) => p.label)].join(' · ') +
+          ' · direct .mp4/.webm/.m3u8'
+        }
       >
         <div className="row" style={{ gap: 8 }}>
           <input
@@ -205,37 +226,65 @@ function LinkTab({ onAdd }: { onAdd: (items: MediaItem[], atTop?: boolean) => vo
 /* Search tab                                                        */
 /* ---------------------------------------------------------------- */
 
+type SearchSource = 'youtube' | 'mediathek';
+
 function SearchTab({ enabled, onAdd }: { enabled: boolean; onAdd: (items: MediaItem[]) => void }) {
   const [query, setQuery] = useState('');
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<MediaItem[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  // The Mediathek index needs no API key, so it is the default when YouTube
+  // search has not been set up.
+  const [source, setSource] = useState<SearchSource>(enabled ? 'youtube' : 'mediathek');
 
-  const run = async () => {
+  const run = async (which: SearchSource = source) => {
     if (!query.trim()) return;
     setBusy(true);
     setError(null);
     try {
-      const res = await api.get<{ items: MediaItem[] }>(`/media/search?q=${encodeURIComponent(query.trim())}`);
+      const path =
+        which === 'youtube'
+          ? `/media/search?q=${encodeURIComponent(query.trim())}`
+          : `/media/search-mediathek?q=${encodeURIComponent(query.trim())}`;
+      const res = await api.get<{ items: MediaItem[] }>(path);
       setResults(res.items);
       setSelected(new Set());
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
+      setResults([]);
     } finally {
       setBusy(false);
     }
   };
 
-  if (!enabled) {
-    return (
-      <EmptyState
-        icon="🔑"
-        title="YouTube search is not set up"
-        hint="An admin can add a YouTube Data API key under Admin → Integrations to enable search and playlist import."
-      />
-    );
-  }
+  const switcher = (
+    <div className="row" style={{ gap: 6 }}>
+      <button
+        className={`btn sm${source === 'youtube' ? ' primary' : ''}`}
+        onClick={() => {
+          setSource('youtube');
+          if (query.trim()) void run('youtube');
+        }}
+        disabled={!enabled}
+        title={enabled ? undefined : 'Needs a YouTube API key'}
+      >
+        YouTube
+      </button>
+      <button
+        className={`btn sm${source === 'mediathek' ? ' primary' : ''}`}
+        onClick={() => {
+          setSource('mediathek');
+          if (query.trim()) void run('mediathek');
+        }}
+      >
+        Mediatheken
+      </button>
+      <span className="tiny faint">
+        {source === 'mediathek' ? 'ARD · ZDF · arte · 3sat · ORF · SRF · DW' : 'youtube.com'}
+      </span>
+    </div>
+  );
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -250,16 +299,17 @@ function SearchTab({ enabled, onAdd }: { enabled: boolean; onAdd: (items: MediaI
 
   return (
     <>
+      {switcher}
       <div className="row" style={{ gap: 8 }}>
         <input
           className="input grow"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && run()}
-          placeholder="Search YouTube"
+          placeholder={source === 'youtube' ? 'Search YouTube' : 'Search the Mediatheken'}
           autoFocus
         />
-        <button className="btn" onClick={run} disabled={busy || !query.trim()}>
+        <button className="btn" onClick={() => run()} disabled={busy || !query.trim()}>
           {busy ? <span className="spinner" /> : <Icon name="search" size={16} />}
         </button>
       </div>
@@ -267,6 +317,13 @@ function SearchTab({ enabled, onAdd }: { enabled: boolean; onAdd: (items: MediaI
       {error && <div className="form-error">{error}</div>}
 
       {busy && results.length === 0 && <Spinner />}
+
+      {!enabled && source === 'youtube' && (
+        <div className="form-error">
+          YouTube search needs an API key. An admin can add one under Admin → Settings, or use the
+          Mediathek search, which needs none.
+        </div>
+      )}
 
       {results.length > 0 && (
         <>

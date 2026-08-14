@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../auth';
 import { MediaError, resolveMediaUrl, resolveYoutubePlaylist, searchYoutube, youtubeApiKey } from '../services/media';
-import { pickBestStream, resolveArdItem } from '../services/ard';
+import { PROVIDERS_BY_ID, providerHints } from '../services/providers';
+import { searchMediathek } from '../services/providers/mediathek-search';
 
 export const mediaRouter = Router();
 mediaRouter.use(requireAuth);
@@ -52,24 +53,37 @@ mediaRouter.get('/youtube-playlist/:id', async (req, res) => {
   }
 });
 
-/** Fresh stream URL for a queued ARD item, resolved when playback starts. */
-mediaRouter.get('/ard/:id', async (req, res) => {
+/**
+ * Fresh stream URL for a queued item, resolved when playback starts. Providers
+ * whose CDN links are signed would otherwise break in a saved playlist.
+ */
+mediaRouter.get('/stream/:provider/:id(*)', async (req, res) => {
+  const provider = PROVIDERS_BY_ID.get(req.params.provider);
+  if (!provider?.freshStream) {
+    res.status(404).json({ error: 'Unknown provider' });
+    return;
+  }
   try {
-    const item = await resolveArdItem(req.params.id);
-    const stream = pickBestStream(item.streams);
-    res.json({
-      url: stream.url,
-      mimeType: stream.mimeType,
-      title: item.title,
-      duration: item.duration,
-      thumbnail: item.thumbnail,
-    });
+    const stream = await provider.freshStream(req.params.id);
+    res.json(stream);
   } catch (err) {
     const status = err instanceof MediaError ? err.status : 500;
     res.status(status).json({ error: err instanceof Error ? err.message : 'Could not load that programme' });
   }
 });
 
+/** Search every German-language public broadcaster in one go. */
+mediaRouter.get('/search-mediathek', async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  try {
+    const items = await searchMediathek(q);
+    res.json({ items });
+  } catch (err) {
+    const status = err instanceof MediaError ? err.status : 500;
+    res.status(status).json({ error: err instanceof Error ? err.message : 'Search failed' });
+  }
+});
+
 mediaRouter.get('/capabilities', (_req, res) => {
-  res.json({ youtubeApi: Boolean(youtubeApiKey()) });
+  res.json({ youtubeApi: Boolean(youtubeApiKey()), providers: providerHints() });
 });

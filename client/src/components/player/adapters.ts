@@ -423,6 +423,116 @@ class TwitchAdapter implements Adapter {
 }
 
 /* ---------------------------------------------------------------- */
+/* Dailymotion                                                       */
+/* ---------------------------------------------------------------- */
+
+/**
+ * Driven through the embed player's postMessage API rather than its HLS
+ * manifest: that manifest carries a token bound to the requesting address, so a
+ * server-resolved URL is refused in the viewer's browser.
+ */
+class DailymotionAdapter implements Adapter {
+  readonly kind = 'dailymotion';
+  readonly supportsRate = false;
+  readonly supportsFineRate = false;
+  readonly isLive = false;
+  ready = false;
+
+  private frame: HTMLIFrameElement;
+  private destroyed = false;
+  private time = 0;
+  private duration = 0;
+  private muted = false;
+  private volume = 1;
+  private onMessage: (e: MessageEvent) => void;
+
+  constructor(
+    private mount: HTMLElement,
+    videoId: string,
+    private cb: AdapterCallbacks
+  ) {
+    const params = new URLSearchParams({
+      api: 'postMessage',
+      controls: 'false',
+      queue_enable: 'false',
+      sharing_enable: 'false',
+      ui_logo: 'false',
+      autoplay: 'false',
+      origin: window.location.origin,
+    });
+    this.frame = document.createElement('iframe');
+    this.frame.src = `https://www.dailymotion.com/embed/video/${encodeURIComponent(videoId)}?${params}`;
+    this.frame.allow = 'autoplay; fullscreen; encrypted-media';
+    this.frame.setAttribute('allowfullscreen', 'true');
+    this.frame.style.border = '0';
+    this.mount.appendChild(this.frame);
+
+    this.onMessage = (event: MessageEvent) => {
+      if (this.destroyed) return;
+      if (!/dailymotion\.com$/.test(new URL(event.origin).hostname)) return;
+      const data = typeof event.data === 'string' ? new URLSearchParams(event.data) : null;
+      if (!data) return;
+      const name = data.get('event');
+
+      switch (name) {
+        case 'apiready':
+        case 'playback_ready':
+          if (!this.ready) {
+            this.ready = true;
+            this.cb.onReady();
+          }
+          break;
+        case 'timeupdate':
+          this.time = Number(data.get('time')) || this.time;
+          break;
+        case 'durationchange':
+          this.duration = Number(data.get('duration')) || this.duration;
+          if (this.duration > 0) this.cb.onDuration(this.duration);
+          break;
+        case 'waiting':
+          this.cb.onBuffering(true);
+          break;
+        case 'playing':
+        case 'canplay':
+        case 'pause':
+          this.cb.onBuffering(false);
+          break;
+        case 'video_end':
+        case 'ended':
+          this.cb.onEnded();
+          break;
+        case 'error':
+          this.cb.onError('Dailymotion could not play this video');
+          break;
+        default:
+          break;
+      }
+    };
+    window.addEventListener('message', this.onMessage);
+  }
+
+  private send(command: string) {
+    this.frame.contentWindow?.postMessage(command, '*');
+  }
+
+  play() { this.send('play'); }
+  pause() { this.send('pause'); }
+  seek(s: number) { this.time = s; this.send(`seek=${s}`); }
+  getTime() { return this.time; }
+  getDuration() { return this.duration; }
+  setVolume(v: number) { this.volume = v; this.send(`volume=${this.muted ? 0 : v}`); }
+  setMuted(m: boolean) { this.muted = m; this.send(`muted=${m ? 1 : 0}`); }
+  setRate() { /* the embed API exposes no playback rate */ }
+
+  destroy() {
+    this.destroyed = true;
+    this.ready = false;
+    window.removeEventListener('message', this.onMessage);
+    this.mount.replaceChildren();
+  }
+}
+
+/* ---------------------------------------------------------------- */
 /* Direct files, HLS, uploads                                        */
 /* ---------------------------------------------------------------- */
 
@@ -564,12 +674,15 @@ class HtmlAdapter implements Adapter {
 /* Factory                                                           */
 /* ---------------------------------------------------------------- */
 
-async function resolveArdStream(id: string): Promise<string> {
-  const res = await fetch(`/api/media/ard/${encodeURIComponent(id)}`, { credentials: 'same-origin' });
+/** Sources whose CDN links are signed and must be fetched again at play time. */
+const FRESH_STREAM_SOURCES = new Set(['ard', 'zdf', 'arte', 'srg', 'peertube', 'archive']);
+
+async function resolveStream(provider: string, id: string): Promise<string> {
+  const res = await fetch(`/api/media/stream/${provider}/${encodeURIComponent(id)}`, {
+    credentials: 'same-origin',
+  });
   const data = await res.json().catch(() => null);
-  if (!res.ok || !data?.url) {
-    throw new Error(data?.error || 'The ARD Mediathek stream could not be loaded');
-  }
+  if (!res.ok || !data?.url) throw new Error(data?.error || 'That stream could not be loaded');
   return data.url as string;
 }
 
@@ -585,10 +698,13 @@ export function createAdapter(mount: HTMLElement, item: QueueItem, cb: AdapterCa
       return new TwitchAdapter(mount, item.sourceId, true, cb);
     case 'upload':
       return new HtmlAdapter(mount, item.url || `/api/uploads/${item.sourceId}/file`, cb);
-    case 'ard':
-      // Signed CDN links expire, so ask the server for a fresh one each time.
-      return new HtmlAdapter(mount, resolveArdStream(item.sourceId), cb);
+    case 'dailymotion':
+      return new DailymotionAdapter(mount, item.sourceId, cb);
     default:
+      // Mediatheken and PeerTube resolve to a fresh signed URL on every play.
+      if (FRESH_STREAM_SOURCES.has(item.source)) {
+        return new HtmlAdapter(mount, resolveStream(item.source, item.sourceId), cb);
+      }
       return new HtmlAdapter(mount, item.url || item.sourceId, cb);
   }
 }

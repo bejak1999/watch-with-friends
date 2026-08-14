@@ -70,7 +70,21 @@ export const api = {
 /* Shared types                                                      */
 /* ---------------------------------------------------------------- */
 
-export type MediaSourceKind = 'youtube' | 'vimeo' | 'twitch' | 'twitch_live' | 'ard' | 'direct' | 'upload';
+export type MediaSourceKind =
+  | 'youtube'
+  | 'vimeo'
+  | 'twitch'
+  | 'twitch_live'
+  | 'ard'
+  | 'zdf'
+  | 'arte'
+  | 'srg'
+  | 'dailymotion'
+  | 'peertube'
+  | 'archive'
+  | 'mediathek'
+  | 'direct'
+  | 'upload';
 
 export interface MediaItem {
   source: MediaSourceKind;

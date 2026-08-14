@@ -1,20 +1,17 @@
 import { config } from '../config';
 import { getSetting } from '../db';
 import { isSafeToFetch } from './ssrf';
-import { parseArdId, pickBestStream, resolveArdItem } from './ard';
+import { matchProvider } from './providers';
+import { MediaError } from './providers/types';
 import type { MediaItem } from '../types';
 
 export function youtubeApiKey(): string {
   return getSetting('youtube_api_key') || config.youtubeApiKeyEnv;
 }
 
-export class MediaError extends Error {
-  status: number;
-  constructor(message: string, status = 400) {
-    super(message);
-    this.status = status;
-  }
-}
+// One shared error class, so `instanceof` still holds for provider failures
+// and their HTTP status is not flattened to 500 on the way out.
+export { MediaError } from './providers/types';
 
 /* ------------------------------------------------------------------ */
 /* URL parsing                                                         */
@@ -27,7 +24,6 @@ export interface ParsedUrl {
     | 'vimeo'
     | 'twitch_vod'
     | 'twitch_channel'
-    | 'ard'
     | 'direct'
     | 'unknown';
   id: string;
@@ -72,12 +68,6 @@ export function parseMediaUrl(raw: string): ParsedUrl {
     }
     if (parts[0] === 'playlist' && list) return { kind: 'youtube_playlist', id: list, url: trimmed };
     if (list) return { kind: 'youtube_playlist', id: list, url: trimmed };
-  }
-
-  // ---- ARD Mediathek ----
-  if (host.endsWith('ardmediathek.de')) {
-    const ardId = parseArdId(trimmed);
-    if (ardId) return { kind: 'ard', id: ardId, url: trimmed, startSeconds };
   }
 
   // ---- Vimeo ----
@@ -427,6 +417,10 @@ export interface ResolveResult {
 }
 
 export async function resolveMediaUrl(raw: string, mode: 'auto' | 'playlist' | 'single' = 'auto'): Promise<ResolveResult> {
+  // Registered sites first; the generic file handling below is the fallback.
+  const hit = matchProvider(raw);
+  if (hit) return { items: [await hit.provider.resolve(hit.id, raw)] };
+
   const parsed = parseMediaUrl(raw);
 
   switch (parsed.kind) {
@@ -443,23 +437,6 @@ export async function resolveMediaUrl(raw: string, mode: 'auto' | 'playlist' | '
       if (mode === 'single') throw new MediaError('That link points at a playlist, not a single video');
       const pl = await resolveYoutubePlaylist(parsed.id);
       return { items: pl.items, playlistTitle: pl.title };
-    }
-    case 'ard': {
-      const item = await resolveArdItem(parsed.id);
-      return {
-        items: [
-          {
-            source: 'ard',
-            sourceId: item.id,
-            // Resolved fresh at play time; the CDN path is signed.
-            url: null,
-            title: item.title,
-            author: item.show,
-            duration: item.duration,
-            thumbnail: item.thumbnail,
-          },
-        ],
-      };
     }
     case 'vimeo':
       return { items: [await resolveVimeo(parsed.id)] };

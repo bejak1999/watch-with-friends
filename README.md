@@ -41,15 +41,39 @@ no random strangers. Just you, your friends, and a shared play button.
 | Source | Support |
 |---|---|
 | ▶️ **YouTube** | Videos, Shorts, and full playlist import |
+| 📺 **ARD Mediathek** | Also fronts BR, WDR, NDR, MDR, SWR, hr and rbb |
+| 📺 **ZDF · 3sat** | ZDF, ZDFneo, ZDFinfo and 3sat share one API |
+| 🎭 **arte** | Every language arte publishes in |
+| 🇨🇭 **SRF · RTS · RSI · RTR** | Swiss public broadcasting |
 | 🔵 **Vimeo** | Public and embeddable videos |
 | 🟣 **Twitch** | VODs sync normally · live channels sync to the live edge |
-| 📺 **ARD Mediathek** | Paste a programme link — resolved to its HLS ladder, so the resolution picker works |
+| 🅳 **Dailymotion** | Through the embed player |
+| 🐙 **PeerTube** | Any instance in the network |
+| 🏛 **Internet Archive** | Public-domain films and recordings |
 | 🔗 **Direct links** | `.mp4` · `.webm` · `.mkv` · `.m3u8` (HLS) · audio files |
 | 📤 **Uploads** | Streamed from your own server, with admin-set storage quotas |
 
+**Search once, find everything.** The Search tab has a *Mediatheken* mode backed by
+MediathekViewWeb, which indexes ARD, ZDF, 3sat, arte, ORF, SRF, DW and every regional
+channel at the same time — no API key needed. YouTube search needs a key; the
+Mediathek search does not.
+
+Adding another site is one file under `server/src/services/providers/`: match a URL,
+return metadata, optionally resolve a fresh stream at play time.
+
 > [!NOTE]
-> No DRM support — Netflix, Disney+ and friends will not work. That's a browser
-> restriction, not something any self-hosted app can get around.
+> **No DRM support** — Netflix, Disney+ and friends will not work. That's a browser
+> restriction, not something any self-hosted app can get around. A handful of
+> public-broadcaster programmes are DRM protected too; those report a clear error
+> rather than failing silently.
+>
+> **Geo-blocking still applies.** Streams are fetched by the viewer's browser, not
+> by your server, so an ARD or SRF programme restricted to its country only plays
+> for people in that country.
+>
+> Sites deliberately left out: ORF (its API now requires authentication), Reddit
+> (blocks server-side requests), and TikTok/Instagram/X, whose private endpoints
+> change constantly and would break every few weeks.
 
 ---
 

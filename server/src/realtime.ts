@@ -32,7 +32,7 @@ import type { MediaItem, PublicUser, RoomRole } from './types';
  * strings into the queue that every other viewer then renders and loads.
  */
 const queueItemSchema = z.object({
-  source: z.enum(['youtube', 'vimeo', 'twitch', 'twitch_live', 'ard', 'direct', 'upload']),
+  source: z.enum(['youtube', 'vimeo', 'twitch', 'twitch_live', 'ard', 'zdf', 'arte', 'srg', 'dailymotion', 'peertube', 'archive', 'mediathek', 'direct', 'upload']),
   sourceId: z.string().min(1).max(2000),
   url: z
     .string()

@@ -1,4 +1,18 @@
-export type MediaSource = 'youtube' | 'vimeo' | 'twitch' | 'twitch_live' | 'ard' | 'direct' | 'upload';
+export type MediaSource =
+  | 'youtube'
+  | 'vimeo'
+  | 'twitch'
+  | 'twitch_live'
+  | 'ard'
+  | 'zdf'
+  | 'arte'
+  | 'srg'
+  | 'dailymotion'
+  | 'peertube'
+  | 'archive'
+  | 'mediathek'
+  | 'direct'
+  | 'upload';
 
 export interface UserRow {
   id: string;
