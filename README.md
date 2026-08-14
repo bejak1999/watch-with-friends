@@ -52,13 +52,46 @@ no random strangers. Just you, your friends, and a shared play button.
 
 ## 🚀 Install
 
-| | Best for | Needs |
-|---|---|---|
-| **[A — guided script](#option-a--one-command-on-your-server-)** | first-time setup, walks you through everything | git + Docker |
-| **[B — prebuilt image](#option-b--pull-a-prebuilt-image-)** ⭐ | a NAS that shouldn't spend CPU compiling | Docker only |
-| **[C — plain compose](#option-c--plain-docker-compose-)** | you already know what you're doing | git + Docker |
+Nothing is required except Docker. No config file, no secrets to generate — the
+server creates its own session key and prints a random admin password on first start.
 
-### Option A — one command on your server ⚡
+```bash
+docker run -d --name watch-with-friends -p 8080:8080 -v wwf-data:/data --restart unless-stopped ghcr.io/bejak1999/watch-with-friends:latest
+```
+
+Get your password, then open `http://<server-ip>:8080`:
+
+```bash
+docker logs watch-with-friends
+```
+
+Sign in as `admin`, **change the password** under Settings, then go to
+**Admin → Codes** to generate registration codes for your friends. That's the whole
+setup. 🎉
+
+<details>
+<summary><b>Prefer Docker Compose?</b> One file, still no <code>.env</code> needed.</summary>
+
+```bash
+curl -O https://raw.githubusercontent.com/bejak1999/watch-with-friends/main/docker-compose.ghcr.yml
+docker compose -f docker-compose.ghcr.yml up -d
+```
+
+Update later:
+```bash
+docker compose -f docker-compose.ghcr.yml pull && docker compose -f docker-compose.ghcr.yml up -d
+```
+
+Want to set things explicitly — a fixed admin password, a host path for the data, a
+different port? Drop a `.env` next to it; every variable is optional:
+
+```bash
+curl -o .env https://raw.githubusercontent.com/bejak1999/watch-with-friends/main/.env.example
+```
+</details>
+
+<details>
+<summary><b>Build from source instead</b> — guided script or plain compose.</summary>
 
 ```bash
 git clone https://github.com/bejak1999/watch-with-friends.git
@@ -66,52 +99,28 @@ cd watch-with-friends
 ./install.sh
 ```
 
-The script checks Docker, generates your `SESSION_SECRET`, asks for your domain and
-admin password, writes `.env`, builds the image, and starts everything. Takes about
-two minutes. Re-run it any time after `git pull` to update — it detects the existing
-`.env` and leaves your data alone.
+`install.sh` walks you through domain, port, admin password and data location, then
+builds and starts everything. Re-run it after `git pull` to update; it keeps your
+existing `.env` and data.
 
-### Option B — pull a prebuilt image 🐳
-
-Every push to `main` publishes a ready-made image to GitHub Container Registry, so
-your server never compiles anything. Ideal for a NAS with a slow CPU. **No login, no
-token, no clone** — three commands and you're running:
+Or skip the script entirely:
 
 ```bash
-curl -O https://raw.githubusercontent.com/bejak1999/watch-with-friends/main/docker-compose.ghcr.yml
-curl -o .env https://raw.githubusercontent.com/bejak1999/watch-with-friends/main/.env.example
-
-nano .env    # set SESSION_SECRET at minimum
-
-docker compose -f docker-compose.ghcr.yml up -d
-```
-
-Updating later:
-```bash
-docker compose -f docker-compose.ghcr.yml pull
-docker compose -f docker-compose.ghcr.yml up -d
-```
-
-Pin a specific build instead of tracking `latest` by setting `IMAGE_TAG` in `.env` —
-every commit is tagged `sha-<short>`, and git tags like `v1.2.0` publish `1.2.0` too.
-
-### Option C — plain Docker Compose 🔧
-
-```bash
-cp .env.example .env
-# set SESSION_SECRET:  openssl rand -base64 48
 docker compose up -d --build
 ```
+</details>
 
-### 🔓 First sign-in
+<details>
+<summary><b>Pin a specific version</b> instead of tracking <code>latest</code>.</summary>
 
-If you left `ADMIN_PASSWORD` empty, the password is printed once in the log:
+Every commit publishes `sha-<short>`, and git tags like `v1.2.0` publish `1.2.0`:
 
 ```bash
-docker compose logs watch-with-friends | grep -A3 "FIRST RUN"
+docker run -d --name watch-with-friends -p 8080:8080 -v wwf-data:/data ghcr.io/bejak1999/watch-with-friends:sha-568ba31
 ```
 
-Open `http://<server-ip>:8080`, sign in, and **change that password** under Settings.
+With compose, set `IMAGE_TAG` in `.env`.
+</details>
 
 ---
 
@@ -180,11 +189,10 @@ ingress:
      public, so leave *Image pull secrets* empty
    - **Port**: container `8080` → node port, e.g. `30080`
    - **Storage**: host path `/mnt/tank/apps/wwf` → mount path `/data`
-   - **Environment**:
+   - **Environment**: all optional, but useful here:
 
      | Name | Value |
      |---|---|
-     | `SESSION_SECRET` | a long random string |
      | `ADMIN_USERNAME` | `admin` |
      | `ADMIN_PASSWORD` | your first password |
      | `TRUST_PROXY` | `true` |
@@ -268,6 +276,8 @@ whenever the request arrives over HTTPS.
 ---
 
 ## ⚙️ Environment variables
+
+**None of these are required** — the defaults are what a plain `docker run` uses.
 
 | Variable | Default | Purpose |
 |---|---|---|

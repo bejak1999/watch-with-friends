@@ -12,9 +12,9 @@ services:
       NODE_ENV: production
       PORT: 8080
       DATA_DIR: /data
-      # Keeps everyone signed in across container updates. Generate with:
-      #   openssl rand -base64 48
-      SESSION_SECRET: "${SESSION_SECRET:?set SESSION_SECRET in .env - run ./install.sh to generate one}"
+      # Everything below is optional. Left empty, the server generates a session
+      # key into /data on first start and prints a random admin password to the log.
+      SESSION_SECRET: "${SESSION_SECRET:-}"
       # Bootstrap admin. Only used on the very first start with an empty database.
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"

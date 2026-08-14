@@ -19,7 +19,9 @@ services:
       NODE_ENV: production
       PORT: 8080
       DATA_DIR: /data
-      SESSION_SECRET: "${SESSION_SECRET:?set SESSION_SECRET in .env}"
+      # Everything below is optional. Left empty, the server generates a session
+      # key into /data on first start and prints a random admin password to the log.
+      SESSION_SECRET: "${SESSION_SECRET:-}"
       ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
