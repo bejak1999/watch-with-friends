@@ -1,0 +1,489 @@
+import type { QueueItem } from '../../lib/api';
+
+export interface AdapterCallbacks {
+  onReady: () => void;
+  onEnded: () => void;
+  onBuffering: (buffering: boolean) => void;
+  onDuration: (seconds: number) => void;
+  /** Fired when the embedded player changed state on its own (user clicked it). */
+  onLocalIntent?: (intent: 'play' | 'pause') => void;
+  onError: (message: string) => void;
+}
+
+export interface Adapter {
+  readonly kind: string;
+  readonly supportsRate: boolean;
+  /** True when arbitrary rates work, so small drift can be nudged instead of seeked. */
+  readonly supportsFineRate: boolean;
+  readonly isLive: boolean;
+  ready: boolean;
+  play(): void;
+  pause(): void;
+  seek(seconds: number): void;
+  getTime(): number;
+  getDuration(): number;
+  setVolume(volume: number): void;
+  setMuted(muted: boolean): void;
+  setRate(rate: number): void;
+  destroy(): void;
+}
+
+/* ---------------------------------------------------------------- */
+/* Script loading                                                    */
+/* ---------------------------------------------------------------- */
+
+const scriptCache = new Map<string, Promise<void>>();
+
+function loadScript(src: string): Promise<void> {
+  const cached = scriptCache.get(src);
+  if (cached) return cached;
+  const promise = new Promise<void>((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = src;
+    el.async = true;
+    el.onload = () => resolve();
+    el.onerror = () => {
+      scriptCache.delete(src);
+      reject(new Error(`Could not load ${src}`));
+    };
+    document.head.appendChild(el);
+  });
+  scriptCache.set(src, promise);
+  return promise;
+}
+
+/* ---------------------------------------------------------------- */
+/* YouTube                                                           */
+/* ---------------------------------------------------------------- */
+
+declare global {
+  interface Window {
+    YT?: any;
+    onYouTubeIframeAPIReady?: () => void;
+    Twitch?: any;
+  }
+}
+
+let ytReady: Promise<void> | null = null;
+
+function loadYouTubeApi(): Promise<void> {
+  if (ytReady) return ytReady;
+  ytReady = new Promise<void>((resolve, reject) => {
+    if (window.YT?.Player) {
+      resolve();
+      return;
+    }
+    const previous = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = () => {
+      previous?.();
+      resolve();
+    };
+    loadScript('https://www.youtube.com/iframe_api').catch(reject);
+  });
+  return ytReady;
+}
+
+class YouTubeAdapter implements Adapter {
+  readonly kind = 'youtube';
+  readonly supportsRate = true;
+  readonly supportsFineRate = false;
+  readonly isLive = false;
+  ready = false;
+
+  private player: any = null;
+  private destroyed = false;
+  private lastState = -1;
+
+  constructor(
+    private mount: HTMLElement,
+    private videoId: string,
+    private cb: AdapterCallbacks
+  ) {
+    void this.init();
+  }
+
+  private async init() {
+    try {
+      await loadYouTubeApi();
+    } catch {
+      this.cb.onError('YouTube could not be reached. Check your internet connection.');
+      return;
+    }
+    if (this.destroyed) return;
+
+    const host = document.createElement('div');
+    this.mount.appendChild(host);
+
+    this.player = new window.YT.Player(host, {
+      videoId: this.videoId,
+      width: '100%',
+      height: '100%',
+      playerVars: {
+        autoplay: 0,
+        controls: 0,
+        disablekb: 1,
+        modestbranding: 1,
+        rel: 0,
+        fs: 0,
+        playsinline: 1,
+        iv_load_policy: 3,
+        origin: window.location.origin,
+      },
+      events: {
+        onReady: () => {
+          if (this.destroyed) return;
+          this.ready = true;
+          const d = this.player.getDuration?.();
+          if (d > 0) this.cb.onDuration(d);
+          this.cb.onReady();
+        },
+        onStateChange: (e: { data: number }) => {
+          if (this.destroyed) return;
+          const YT = window.YT.PlayerState;
+          if (e.data === YT.BUFFERING) this.cb.onBuffering(true);
+          if (e.data === YT.PLAYING || e.data === YT.PAUSED || e.data === YT.CUED) this.cb.onBuffering(false);
+          if (e.data === YT.ENDED) this.cb.onEnded();
+          if (e.data === YT.PLAYING && this.lastState === YT.PAUSED) this.cb.onLocalIntent?.('play');
+          if (e.data === YT.PAUSED && this.lastState === YT.PLAYING) this.cb.onLocalIntent?.('pause');
+          if (e.data === YT.PLAYING) {
+            const d = this.player.getDuration?.();
+            if (d > 0) this.cb.onDuration(d);
+          }
+          this.lastState = e.data;
+        },
+        onError: (e: { data: number }) => {
+          const messages: Record<number, string> = {
+            2: 'That YouTube video id is invalid',
+            5: 'YouTube cannot play this video in an embedded player',
+            100: 'That YouTube video was removed or is private',
+            101: 'The uploader does not allow this video to be embedded',
+            150: 'The uploader does not allow this video to be embedded',
+          };
+          this.cb.onError(messages[e.data] || 'YouTube could not play this video');
+        },
+      },
+    });
+  }
+
+  play() { this.player?.playVideo?.(); }
+  pause() { this.player?.pauseVideo?.(); }
+  seek(s: number) { this.player?.seekTo?.(s, true); }
+  getTime() { return this.player?.getCurrentTime?.() ?? 0; }
+  getDuration() { return this.player?.getDuration?.() ?? 0; }
+  setVolume(v: number) { this.player?.setVolume?.(Math.round(v * 100)); }
+  setMuted(m: boolean) { m ? this.player?.mute?.() : this.player?.unMute?.(); }
+  setRate(r: number) { this.player?.setPlaybackRate?.(r); }
+
+  destroy() {
+    this.destroyed = true;
+    this.ready = false;
+    try {
+      this.player?.destroy?.();
+    } catch {
+      /* the iframe may already be gone */
+    }
+    this.player = null;
+    this.mount.replaceChildren();
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Vimeo                                                             */
+/* ---------------------------------------------------------------- */
+
+class VimeoAdapter implements Adapter {
+  readonly kind = 'vimeo';
+  readonly supportsRate = true;
+  readonly supportsFineRate = true;
+  readonly isLive = false;
+  ready = false;
+
+  private player: any = null;
+  private destroyed = false;
+  private time = 0;
+  private duration = 0;
+
+  constructor(
+    private mount: HTMLElement,
+    private videoId: string,
+    private cb: AdapterCallbacks
+  ) {
+    void this.init();
+  }
+
+  private async init() {
+    let Player: any;
+    try {
+      Player = (await import('@vimeo/player')).default;
+    } catch {
+      this.cb.onError('The Vimeo player could not be loaded');
+      return;
+    }
+    if (this.destroyed) return;
+
+    const host = document.createElement('div');
+    host.style.width = '100%';
+    host.style.height = '100%';
+    this.mount.appendChild(host);
+
+    this.player = new Player(host, {
+      id: Number(this.videoId),
+      controls: false,
+      responsive: false,
+      width: 1280,
+      dnt: true,
+      playsinline: true,
+    });
+
+    this.player.on('loaded', async () => {
+      if (this.destroyed) return;
+      this.ready = true;
+      try {
+        this.duration = await this.player.getDuration();
+        if (this.duration > 0) this.cb.onDuration(this.duration);
+      } catch {
+        /* duration is optional */
+      }
+      this.cb.onReady();
+    });
+    this.player.on('timeupdate', (d: { seconds: number; duration: number }) => {
+      this.time = d.seconds;
+      this.duration = d.duration;
+    });
+    this.player.on('bufferstart', () => this.cb.onBuffering(true));
+    this.player.on('bufferend', () => this.cb.onBuffering(false));
+    this.player.on('ended', () => this.cb.onEnded());
+    this.player.on('error', () => this.cb.onError('Vimeo could not play this video'));
+  }
+
+  play() { this.player?.play?.().catch(() => undefined); }
+  pause() { this.player?.pause?.().catch(() => undefined); }
+  seek(s: number) { this.time = s; this.player?.setCurrentTime?.(s).catch(() => undefined); }
+  getTime() { return this.time; }
+  getDuration() { return this.duration; }
+  setVolume(v: number) { this.player?.setVolume?.(v).catch(() => undefined); }
+  setMuted(m: boolean) { this.player?.setMuted?.(m).catch(() => undefined); }
+  setRate(r: number) { this.player?.setPlaybackRate?.(r).catch(() => undefined); }
+
+  destroy() {
+    this.destroyed = true;
+    this.ready = false;
+    try {
+      this.player?.destroy?.();
+    } catch {
+      /* ignore */
+    }
+    this.player = null;
+    this.mount.replaceChildren();
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Twitch                                                            */
+/* ---------------------------------------------------------------- */
+
+class TwitchAdapter implements Adapter {
+  readonly kind = 'twitch';
+  readonly supportsRate = false;
+  readonly supportsFineRate = false;
+  readonly isLive: boolean;
+  ready = false;
+
+  private player: any = null;
+  private destroyed = false;
+  private hostId: string;
+
+  constructor(
+    private mount: HTMLElement,
+    private target: string,
+    live: boolean,
+    private cb: AdapterCallbacks
+  ) {
+    this.isLive = live;
+    this.hostId = `twitch-${Math.random().toString(36).slice(2)}`;
+    void this.init();
+  }
+
+  private async init() {
+    try {
+      await loadScript('https://player.twitch.tv/js/embed/v1.js');
+    } catch {
+      this.cb.onError('The Twitch player could not be loaded');
+      return;
+    }
+    if (this.destroyed || !window.Twitch?.Player) return;
+
+    const host = document.createElement('div');
+    host.id = this.hostId;
+    host.style.width = '100%';
+    host.style.height = '100%';
+    this.mount.appendChild(host);
+
+    // Twitch refuses to embed unless the hosting domain is declared.
+    const parents = Array.from(new Set([window.location.hostname, 'localhost'].filter(Boolean)));
+
+    this.player = new window.Twitch.Player(this.hostId, {
+      ...(this.isLive ? { channel: this.target } : { video: this.target }),
+      width: '100%',
+      height: '100%',
+      autoplay: false,
+      controls: false,
+      muted: false,
+      parent: parents,
+    });
+
+    const P = window.Twitch.Player;
+    this.player.addEventListener(P.READY, () => {
+      if (this.destroyed) return;
+      this.ready = true;
+      const d = this.player.getDuration?.();
+      if (d > 0) this.cb.onDuration(d);
+      this.cb.onReady();
+    });
+    this.player.addEventListener(P.ENDED, () => this.cb.onEnded());
+    this.player.addEventListener(P.PLAYING, () => this.cb.onBuffering(false));
+    this.player.addEventListener(P.OFFLINE, () => this.cb.onError('That Twitch channel is offline'));
+  }
+
+  play() { this.player?.play?.(); }
+  pause() { if (!this.isLive) this.player?.pause?.(); }
+  seek(s: number) { if (!this.isLive) this.player?.seek?.(s); }
+  getTime() { return this.player?.getCurrentTime?.() ?? 0; }
+  getDuration() { return this.player?.getDuration?.() ?? 0; }
+  setVolume(v: number) { this.player?.setVolume?.(v); }
+  setMuted(m: boolean) { this.player?.setMuted?.(m); }
+  setRate() { /* Twitch has no playback rate API */ }
+
+  destroy() {
+    this.destroyed = true;
+    this.ready = false;
+    this.player = null;
+    this.mount.replaceChildren();
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Direct files, HLS, uploads                                        */
+/* ---------------------------------------------------------------- */
+
+class HtmlAdapter implements Adapter {
+  readonly kind = 'html';
+  readonly supportsRate = true;
+  readonly supportsFineRate = true;
+  readonly isLive = false;
+  ready = false;
+
+  private video: HTMLVideoElement;
+  private hls: any = null;
+  private destroyed = false;
+
+  constructor(
+    private mount: HTMLElement,
+    private src: string,
+    private cb: AdapterCallbacks
+  ) {
+    this.video = document.createElement('video');
+    this.video.playsInline = true;
+    this.video.preload = 'auto';
+    this.video.controls = false;
+    this.video.crossOrigin = 'anonymous';
+    this.video.style.width = '100%';
+    this.video.style.height = '100%';
+    this.video.style.objectFit = 'contain';
+    this.video.style.background = '#000';
+    this.mount.appendChild(this.video);
+
+    this.video.addEventListener('loadedmetadata', () => {
+      this.ready = true;
+      if (Number.isFinite(this.video.duration) && this.video.duration > 0) this.cb.onDuration(this.video.duration);
+      this.cb.onReady();
+    });
+    this.video.addEventListener('waiting', () => this.cb.onBuffering(true));
+    this.video.addEventListener('stalled', () => this.cb.onBuffering(true));
+    this.video.addEventListener('playing', () => this.cb.onBuffering(false));
+    this.video.addEventListener('canplay', () => this.cb.onBuffering(false));
+    this.video.addEventListener('ended', () => this.cb.onEnded());
+    this.video.addEventListener('error', () => {
+      this.cb.onError('This video could not be played. The link may be broken or blocked by CORS.');
+    });
+
+    void this.attach();
+  }
+
+  private async attach() {
+    const isHls = /\.m3u8(\?|#|$)/i.test(this.src);
+    const nativeHls = this.video.canPlayType('application/vnd.apple.mpegurl') !== '';
+
+    // Same-origin uploads must send the session cookie; anonymous CORS would drop it.
+    if (this.src.startsWith('/')) this.video.crossOrigin = null as unknown as string;
+
+    if (isHls && !nativeHls) {
+      try {
+        const Hls = (await import('hls.js')).default;
+        if (this.destroyed) return;
+        if (Hls.isSupported()) {
+          this.hls = new Hls({ enableWorker: true, lowLatencyMode: false });
+          this.hls.loadSource(this.src);
+          this.hls.attachMedia(this.video);
+          this.hls.on(Hls.Events.ERROR, (_e: unknown, data: any) => {
+            if (data?.fatal) this.cb.onError('The HLS stream stopped working');
+          });
+          return;
+        }
+      } catch {
+        this.cb.onError('HLS playback is not available in this browser');
+        return;
+      }
+    }
+    this.video.src = this.src;
+  }
+
+  play() {
+    this.video.play().catch(() => {
+      // Autoplay was refused; a muted retry keeps the room in sync visually.
+      this.video.muted = true;
+      this.video.play().catch(() => undefined);
+    });
+  }
+  pause() { this.video.pause(); }
+  seek(s: number) { try { this.video.currentTime = s; } catch { /* not seekable yet */ } }
+  getTime() { return this.video.currentTime || 0; }
+  getDuration() { return Number.isFinite(this.video.duration) ? this.video.duration : 0; }
+  setVolume(v: number) { this.video.volume = Math.max(0, Math.min(1, v)); }
+  setMuted(m: boolean) { this.video.muted = m; }
+  setRate(r: number) { this.video.playbackRate = r; }
+
+  destroy() {
+    this.destroyed = true;
+    this.ready = false;
+    try {
+      this.hls?.destroy?.();
+    } catch {
+      /* ignore */
+    }
+    this.video.removeAttribute('src');
+    this.video.load();
+    this.mount.replaceChildren();
+  }
+}
+
+/* ---------------------------------------------------------------- */
+/* Factory                                                           */
+/* ---------------------------------------------------------------- */
+
+export function createAdapter(mount: HTMLElement, item: QueueItem, cb: AdapterCallbacks): Adapter {
+  switch (item.source) {
+    case 'youtube':
+      return new YouTubeAdapter(mount, item.sourceId, cb);
+    case 'vimeo':
+      return new VimeoAdapter(mount, item.sourceId, cb);
+    case 'twitch':
+      return new TwitchAdapter(mount, item.sourceId, false, cb);
+    case 'twitch_live':
+      return new TwitchAdapter(mount, item.sourceId, true, cb);
+    case 'upload':
+      return new HtmlAdapter(mount, item.url || `/api/uploads/${item.sourceId}/file`, cb);
+    default:
+      return new HtmlAdapter(mount, item.url || item.sourceId, cb);
+  }
+}

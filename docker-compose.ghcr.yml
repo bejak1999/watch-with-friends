@@ -1,0 +1,42 @@
+# Runs the prebuilt image from GitHub Container Registry instead of building
+# locally. The package is private, so log in once on the host first:
+#
+#   echo <TOKEN_WITH_read:packages> | docker login ghcr.io -u bejak1999 --password-stdin
+#
+# Update later with:
+#   docker compose -f docker-compose.ghcr.yml pull
+#   docker compose -f docker-compose.ghcr.yml up -d
+
+services:
+  watch-with-friends:
+    image: ghcr.io/bejak1999/watch-with-friends:${IMAGE_TAG:-latest}
+    container_name: watch-with-friends
+    restart: unless-stopped
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATA_DIR: /data
+      SESSION_SECRET: "${SESSION_SECRET:?set SESSION_SECRET in .env}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
+      TRUST_PROXY: "true"
+      SESSION_DAYS: "30"
+      TZ: "${TZ:-Europe/Berlin}"
+    volumes:
+      - "${DATA_PATH:-wwf-data}:/data"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  wwf-data:

@@ -1,0 +1,43 @@
+services:
+  watch-with-friends:
+    build: .
+    image: watch-with-friends:local
+    container_name: watch-with-friends
+    restart: unless-stopped
+    ports:
+      # Only your reverse proxy / Cloudflare tunnel needs to reach this.
+      # Use "127.0.0.1:${HOST_PORT}:8080" if cloudflared runs on the same host.
+      - "${HOST_PORT:-8080}:8080"
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      DATA_DIR: /data
+      # Keeps everyone signed in across container updates. Generate with:
+      #   openssl rand -base64 48
+      SESSION_SECRET: "${SESSION_SECRET:?set SESSION_SECRET in .env - run ./install.sh to generate one}"
+      # Bootstrap admin. Only used on the very first start with an empty database.
+      ADMIN_USERNAME: "${ADMIN_USERNAME:-admin}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      # Optional - can also be set later in the admin panel.
+      YOUTUBE_API_KEY: "${YOUTUBE_API_KEY:-}"
+      # Required behind a Cloudflare tunnel so secure cookies are issued.
+      TRUST_PROXY: "true"
+      SESSION_DAYS: "30"
+      TZ: "${TZ:-Europe/Berlin}"
+    volumes:
+      # DATA_PATH is either a named volume (default) or a host path such as
+      # /mnt/tank/apps/wwf. install.sh sets it for you.
+      - "${DATA_PATH:-wwf-data}:/data"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  wwf-data:
