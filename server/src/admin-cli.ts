@@ -20,7 +20,8 @@ function usage(): never {
 
     list                          show every account
     reset <username> <password>   set a password, grant admin, re-enable, clear lockouts
-    unlock <username>             clear failed-login back-off only
+    unlock <username>             clear that account's failed-login back-off
+    unlock --all                  clear every counter, including address lockouts
     create <username> <password>  add a new admin account
 
   Example:
@@ -33,8 +34,35 @@ function findUser(username: string): UserRow | undefined {
   return db.prepare('SELECT * FROM users WHERE username = ?').get(username) as UserRow | undefined;
 }
 
-function clearLockFor(username: string): void {
+/**
+ * Every attempt is guarded by two counters - the account and the caller's
+ * address - so clearing only the account leaves the person just as locked out.
+ * Report what is left so the fix is obvious.
+ */
+function clearLockFor(username: string): number {
+  const user = findUser(username);
   db.prepare('DELETE FROM login_attempts WHERE key = ?').run(`u:${username.toLowerCase()}`);
+  if (user) db.prepare('DELETE FROM login_attempts WHERE key = ?').run(`pw:${user.id}`);
+
+  const remaining = db
+    .prepare("SELECT COUNT(*) AS c FROM login_attempts WHERE key LIKE 'ip:%' AND locked_until > ?")
+    .get(Date.now()) as { c: number };
+  return remaining.c;
+}
+
+function reportRemaining(count: number): void {
+  if (count === 0) return;
+  console.log(
+    `  Note: ${count} address lockout${count === 1 ? '' : 's'} still active. If you are still\n` +
+      `  blocked, that is your own IP from retrying - clear it with:\n\n` +
+      `    node server/dist/admin-cli.js unlock --all\n`
+  );
+}
+
+function clearEverything(): number {
+  const before = (db.prepare('SELECT COUNT(*) AS c FROM login_attempts').get() as { c: number }).c;
+  db.prepare('DELETE FROM login_attempts').run();
+  return before;
 }
 
 function listUsers(): void {
@@ -98,16 +126,23 @@ switch (command) {
       hashPassword(password),
       user.id
     );
-    clearLockFor(username);
+    const left = clearLockFor(username);
     console.log(`\n  Password reset for "${username}". It is now an enabled admin account.\n`);
+    reportRemaining(left);
     break;
   }
 
   case 'unlock': {
     const [username] = args;
     if (!username) usage();
-    clearLockFor(username);
+    if (username === '--all') {
+      const n = clearEverything();
+      console.log(`\n  Cleared every login counter (${n} entr${n === 1 ? 'y' : 'ies'}).\n`);
+      break;
+    }
+    const left = clearLockFor(username);
     console.log(`\n  Cleared the login back-off for "${username}".\n`);
+    reportRemaining(left);
     break;
   }
 

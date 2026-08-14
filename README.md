@@ -251,8 +251,11 @@ docker exec -it watch-with-friends node server/dist/admin-cli.js list
 # Set a password, grant admin, re-enable the account, clear its lockout
 docker exec -it watch-with-friends node server/dist/admin-cli.js reset admin 'my new password'
 
-# Clear only the failed-login back-off
+# Clear one account's failed-login back-off
 docker exec -it watch-with-friends node server/dist/admin-cli.js unlock admin
+
+# Clear EVERY counter, including the address lockout your own retries created
+docker exec -it watch-with-friends node server/dist/admin-cli.js unlock --all
 
 # Add a brand-new admin account
 docker exec -it watch-with-friends node server/dist/admin-cli.js create benni 'my new password'
@@ -264,7 +267,7 @@ Common causes:
 |---|---|---|
 | "Wrong username or password" right after setting `ADMIN_*` | Those only apply to an empty database | `admin-cli.js reset` |
 | Forgot the generated password | It was printed once, on first start | `admin-cli.js reset` |
-| "Too many failed attempts" | Brute-force back-off | Wait it out, or `admin-cli.js unlock` |
+| "Too many failed attempts" | Brute-force back-off | Wait it out, or `admin-cli.js unlock --all` — retrying locks your *address* as well as the account, so unlocking just the account is not enough |
 | Password containing `$` is truncated | Docker Compose expands `$…` in `.env` | Single-quote it (`ADMIN_PASSWORD='a$b'`) or double the `$$`. A backslash does **not** work. |
 
 ---
