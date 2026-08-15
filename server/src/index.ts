@@ -13,6 +13,7 @@ import { playlistsRouter } from './routes/playlists';
 import { uploadsRouter } from './routes/uploads';
 import { adminRouter } from './routes/admin';
 import { avatarRouter } from './routes/avatars';
+import { statsRouter } from './routes/stats';
 import { initRealtime } from './realtime';
 import { sweepExpired } from './services/rateLimit';
 
@@ -58,6 +59,7 @@ app.use('/api/playlists', playlistsRouter);
 app.use('/api/uploads', uploadsRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/users', avatarRouter);
+app.use('/api/stats', statsRouter);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'Unknown endpoint' });

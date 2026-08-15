@@ -27,6 +27,9 @@ export function Layout() {
       <NavLink to="/playlists" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
         <Icon name="list" /> Playlists
       </NavLink>
+      <NavLink to="/stats" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
+        <Icon name="chart" /> Statistics
+      </NavLink>
       <NavLink to="/settings" className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
         <Icon name="settings" /> Settings
       </NavLink>

@@ -11,7 +11,7 @@ type IconName =
   | 'play' | 'pause' | 'next' | 'prev' | 'plus' | 'close' | 'search' | 'settings' | 'users' | 'chat'
   | 'list' | 'home' | 'shield' | 'logout' | 'link' | 'trash' | 'shuffle' | 'repeat' | 'repeat-one'
   | 'volume' | 'mute' | 'menu' | 'check' | 'copy' | 'upload' | 'lock' | 'globe' | 'star' | 'edit'
-  | 'expand' | 'collapse' | 'grip' | 'save' | 'refresh' | 'chevron-down' | 'sync';
+  | 'expand' | 'collapse' | 'grip' | 'save' | 'refresh' | 'chevron-down' | 'sync' | 'chart';
 
 const PATHS: Record<IconName, ReactNode> = {
   play: <path d="M6 4.5v15l12-7.5z" fill="currentColor" stroke="none" />,
@@ -49,6 +49,7 @@ const PATHS: Record<IconName, ReactNode> = {
   save: <><path d="M5 4h11l3 3v13H5z" /><path d="M8 4v6h7V4M8 20v-6h8v6" /></>,
   refresh: <><path d="M20 12a8 8 0 11-2.6-5.9" /><path d="M20 4v5h-5" /></>,
   'chevron-down': <path d="M6 9.5l6 6 6-6" />,
+  chart: <><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></>,
   sync: <><path d="M4 12a8 8 0 0113.7-5.6L20 8" /><path d="M20 4v4h-4" /><path d="M20 12a8 8 0 01-13.7 5.6L4 16" /><path d="M4 20v-4h4" /></>,
 };
 

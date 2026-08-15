@@ -10,6 +10,7 @@ import { storageStats } from './uploads';
 import { activeLockouts, clearLockout } from '../services/rateLimit';
 import { forgetRoom, kickUser } from '../realtime';
 import { deleteAvatarFiles } from './avatars';
+import { globalStats } from '../services/stats';
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
@@ -272,7 +273,7 @@ adminRouter.get('/overview', (req, res) => {
     )
     .all() as Array<Record<string, unknown>>;
 
-  res.json({ counts, rooms, storage: storageStats(req.user!.id) });
+  res.json({ counts, rooms, storage: storageStats(req.user!.id), watch: globalStats() });
 });
 
 /* ------------------------------------------------------------------ */

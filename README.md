@@ -32,6 +32,8 @@ no random strangers. Just you, your friends, and a shared play button.
 | 👑 | **Host controls.** Let everyone drive, or lock playback and the queue to hosts. Promote, remove, or block people. |
 | 🛡️ | **Brute-force protection.** Three free mistakes, then every wrong password doubles the wait — 2s, 4s, 8s… up to 15 minutes. |
 | 🎨 | **Themes.** Dark, Midnight (OLED black) and Light, a pickable accent colour, and three densities — saved to your account. |
+| 🧩 | **Survives SponsorBlock.** When an extension skips ahead, the room follows instead of fighting it — one person's skip skips it for everyone. An ad that freezes one player makes the room wait. |
+| 📊 | **Statistics.** Watch time, videos played, per-room leaderboards and a two-week activity chart, counted on the server so nobody can inflate them. |
 | 🖼️ | **Profile pictures.** Upload an avatar, cropped and resized in your browser. Admins can fix somebody else's. |
 | 🔍 | **Resolution control.** Pick a rendition for HLS, ARD, Vimeo and Twitch — your choice only, so a slow connection never drags anyone else down. |
 | 📱 | **Works on phones.** Responsive layout, fullscreen, keyboard shortcuts, and controls that adapt instead of clipping. |

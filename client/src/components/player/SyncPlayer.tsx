@@ -27,6 +27,12 @@ interface Props {
   onDuration: (itemId: string, seconds: number) => void;
   onError: (message: string) => void;
   onReport: (position: number) => void;
+  /** May this viewer move the room? Decides jump propagation. */
+  canControl: boolean;
+  /** An extension moved our playhead; carry the room with us. */
+  onExternalSeek: (position: number) => void;
+  /** One-off explanation shown to the viewer. */
+  onNotice: (message: string) => void;
   /** Reports the resolutions this source can offer, once they are known. */
   onQualities: (options: QualityOption[], activeId: string) => void;
 }
@@ -36,6 +42,10 @@ const HARD_SEEK_DRIFT = 2.0;
 /** Players without fine rate control (YouTube, Twitch) get a wider dead zone. */
 const COARSE_SEEK_DRIFT = 1.2;
 const NUDGE_DRIFT = 0.35;
+/** A playhead move this large in one 400ms tick was not caused by playback. */
+const EXTERNAL_JUMP = 1.5;
+/** Cap propagated jumps so a misbehaving player cannot spam the room. */
+const JUMP_BUDGET = 12;
 
 export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlayer(
   {
@@ -51,6 +61,9 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     onError,
     onReport,
     onQualities,
+    canControl,
+    onExternalSeek,
+    onNotice,
   },
   ref
 ) {
@@ -60,14 +73,19 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Latest props read inside intervals without re-creating the player.
-  const live = useRef({ playback, serverOffset, armed, volume, muted, item });
-  live.current = { playback, serverOffset, armed, volume, muted, item };
+  const live = useRef({ playback, serverOffset, armed, volume, muted, item, canControl });
+  live.current = { playback, serverOffset, armed, volume, muted, item, canControl };
 
   const driftRef = useRef(0);
   const bufferingSince = useRef(0);
   const reportedBuffering = useRef(false);
   const lastSeekAt = useRef(0);
   const appliedRate = useRef(1);
+  /** Previous playhead reading, used to tell playback apart from a jump. */
+  const lastSample = useRef<{ time: number; at: number } | null>(null);
+  const stalledSince = useRef(0);
+  const jumpBudget = useRef(JUMP_BUDGET);
+  const warnedNoControl = useRef(false);
 
   /* ---- adapter lifecycle: rebuild whenever the track changes ---- */
   useEffect(() => {
@@ -75,6 +93,9 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     setLoadError(null);
     onQualities([], 'auto');
     driftRef.current = 0;
+    lastSample.current = null;
+    stalledSince.current = 0;
+    jumpBudget.current = JUMP_BUDGET;
     reportedBuffering.current = false;
     onBuffering(false);
 
@@ -149,6 +170,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       if (!adapter.isLive && Math.abs(adapter.getTime() - target) > HARD_SEEK_DRIFT) {
         adapter.seek(target);
         lastSeekAt.current = Date.now();
+      lastSample.current = null;
       }
       adapter.play();
     } else {
@@ -156,6 +178,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       if (!adapter.isLive && Math.abs(adapter.getTime() - playback.position) > 0.6) {
         adapter.seek(playback.position);
         lastSeekAt.current = Date.now();
+      lastSample.current = null;
       }
     }
     // stateAt changes on every server update, which is exactly when we resync.
@@ -191,15 +214,64 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       const drift = localTime - target;
       driftRef.current = drift;
 
+      /* ---- what did the playhead do since the last tick? ---- */
+      const now = Date.now();
+      const sample = lastSample.current;
+      const settled = now - lastSeekAt.current > 1200;
+      lastSample.current = { time: localTime, at: now };
+
+      if (pb.isPlaying && sample && settled) {
+        const elapsed = (now - sample.at) / 1000;
+        const expectedAdvance = elapsed * (pb.rate || 1);
+        const actualAdvance = localTime - sample.time;
+        const unexplained = actualAdvance - expectedAdvance;
+
+        // A browser extension (SponsorBlock and friends) moves the playhead by
+        // setting currentTime. Left alone we would drag it back every 400ms and
+        // fight the extension forever, so treat the jump as a seek instead.
+        if (Math.abs(unexplained) > EXTERNAL_JUMP) {
+          if (live.current.canControl && jumpBudget.current > 0) {
+            jumpBudget.current -= 1;
+            lastSeekAt.current = now;
+            onExternalSeek(localTime);
+            return;
+          }
+          if (!warnedNoControl.current) {
+            warnedNoControl.current = true;
+            onNotice(
+              'Something in your browser skipped ahead - probably SponsorBlock. ' +
+                'Only hosts can move the room, so you were pulled back in line.'
+            );
+          }
+        }
+
+        // Time frozen while the room plays means an ad, a decode stall or a
+        // throttled tab. Tell the room so "wait for everyone" can hold.
+        if (Math.abs(actualAdvance) < 0.05 && elapsed > 0.3) {
+          if (stalledSince.current === 0) stalledSince.current = now;
+          if (now - stalledSince.current > 2500 && !reportedBuffering.current) {
+            reportedBuffering.current = true;
+            onBuffering(true);
+          }
+        } else if (stalledSince.current !== 0) {
+          stalledSince.current = 0;
+          if (reportedBuffering.current && bufferingSince.current === 0) {
+            reportedBuffering.current = false;
+            onBuffering(false);
+          }
+        }
+      }
+
       if (!pb.isPlaying) return;
       // Give a fresh seek time to settle before judging drift again.
-      if (Date.now() - lastSeekAt.current < 1200) return;
+      if (!settled) return;
 
       const seekThreshold = adapter.supportsFineRate ? HARD_SEEK_DRIFT : COARSE_SEEK_DRIFT;
 
       if (Math.abs(drift) > seekThreshold) {
         adapter.seek(target + 0.25);
         lastSeekAt.current = Date.now();
+      lastSample.current = null;
         if (adapter.supportsRate) adapter.setRate(pb.rate || 1);
         appliedRate.current = pb.rate || 1;
         return;
@@ -215,7 +287,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       }
     }, 400);
     return () => window.clearInterval(timer);
-  }, [onBuffering, onReport]);
+  }, [onBuffering, onReport, onExternalSeek, onNotice]);
 
   useImperativeHandle(
     ref,

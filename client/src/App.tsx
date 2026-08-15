@@ -9,6 +9,7 @@ import { RoomPage } from './pages/RoomPage';
 import { InvitePage } from './pages/InvitePage';
 import { PlaylistsPage } from './pages/PlaylistsPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { StatsPage } from './pages/StatsPage';
 import { AdminPage } from './pages/AdminPage';
 
 function FullPageSpinner() {
@@ -47,6 +48,7 @@ export function App() {
           <Route path="/" element={<RoomsPage />} />
           <Route path="/rooms/:roomId" element={<RoomPage />} />
           <Route path="/playlists" element={<PlaylistsPage />} />
+          <Route path="/stats" element={<StatsPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           {user.isAdmin && <Route path="/admin" element={<AdminPage />} />}
         </Route>

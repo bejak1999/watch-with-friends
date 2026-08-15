@@ -24,6 +24,7 @@ import {
   writePlayback,
 } from './services/rooms';
 import { z } from 'zod';
+import { creditWatchTime, logPlay } from './services/stats';
 import type { MediaItem, PublicUser, RoomRole } from './types';
 
 /**
@@ -101,6 +102,8 @@ const emptyRoomTimers = new Map<string, NodeJS.Timeout>();
  * little and let a reconnect cancel it.
  */
 const EMPTY_ROOM_GRACE_MS = 45_000;
+/** Heartbeat period, and therefore the granularity of watch-time accrual. */
+const TICK_SECONDS = 5;
 
 function cancelEmptyRoomFreeze(roomId: string): void {
   const timer = emptyRoomTimers.get(roomId);
@@ -322,6 +325,12 @@ function markPlayed(itemId: string | null) {
 
 function selectItem(roomId: string, itemId: string | null, autoplay: boolean) {
   writePlayback(roomId, { currentItemId: itemId, position: 0, isPlaying: autoplay && Boolean(itemId) });
+  if (itemId) {
+    const row = db.prepare('SELECT title, source, added_by FROM queue_items WHERE id = ?').get(itemId) as
+      | { title: string; source: string; added_by: string | null }
+      | undefined;
+    if (row) logPlay(roomId, row.title, row.source, row.added_by);
+  }
   markPlayed(itemId);
   lastAdvance.set(roomId, Date.now());
   autoPaused.set(roomId, false);
@@ -751,14 +760,27 @@ export function initRealtime(httpServer: HttpServer): Server {
   });
 
   // Periodic resync: cheap, and it repairs drift caused by tab throttling.
+  // The same tick credits watch time, so only genuinely playing, non-buffering
+  // viewers accrue - and a client cannot inflate its own numbers.
   setInterval(() => {
     if (!io) return;
     for (const [key] of io.sockets.adapter.rooms) {
       if (!key.startsWith('room:')) continue;
-      const payload = playbackPayload(key.slice(5));
+      const roomId = key.slice(5);
+      const payload = playbackPayload(roomId);
       if (payload) io.to(key).emit('player:tick', payload);
+
+      const room = roomById(roomId);
+      if (!room || room.is_playing !== 1) continue;
+      const watching = new Set<string>();
+      for (const s of socketsIn(roomId)) {
+        const st = socketState.get(s);
+        // One person with two tabs open is still one person watching.
+        if (st && !st.buffering) watching.add(st.user.id);
+      }
+      if (watching.size > 0) creditWatchTime(roomId, watching, TICK_SECONDS);
     }
-  }, 5000);
+  }, TICK_SECONDS * 1000);
 
   // Members payload carries live sync positions; refresh it at a slower rate.
   setInterval(() => {

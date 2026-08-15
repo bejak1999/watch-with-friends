@@ -168,6 +168,20 @@ export function RoomPage() {
     playerRef.current?.setQuality(id);
   }, []);
 
+  /**
+   * A browser extension moved our playhead. Rather than fight it every 400ms,
+   * carry the whole room to the new position - one person's SponsorBlock then
+   * skips the sponsor for everybody.
+   */
+  const onExternalSeek = useCallback(
+    (position: number) => {
+      actions.seek(position);
+    },
+    [actions]
+  );
+
+  const onNotice = useCallback((message: string) => toast(message, 'info'), [toast]);
+
   const onPlayerError = useCallback(
     (message: string) => {
       setPlayerFailed(true);
@@ -215,6 +229,9 @@ export function RoomPage() {
             onError={onPlayerError}
             onReport={onReport}
             onQualities={onQualities}
+            canControl={canControl}
+            onExternalSeek={onExternalSeek}
+            onNotice={onNotice}
           />
 
           {/* Keeps clicks from reaching the embedded player so the room stays authoritative. */}

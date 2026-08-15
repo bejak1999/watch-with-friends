@@ -166,6 +166,33 @@ MIGRATIONS.push((d) => {
   d.exec(`ALTER TABLE users ADD COLUMN avatar_updated_at INTEGER;`);
 });
 
+MIGRATIONS.push((d) => {
+  d.exec(`
+    -- Seconds actually watched, bucketed per day so trends stay cheap to query.
+    CREATE TABLE watch_stats (
+      user_id TEXT NOT NULL,
+      room_id TEXT NOT NULL,
+      day     TEXT NOT NULL,
+      seconds INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, room_id, day)
+    );
+    CREATE INDEX idx_watch_day ON watch_stats(day);
+    CREATE INDEX idx_watch_room ON watch_stats(room_id);
+
+    -- One row each time a track starts, which gives "what did we watch".
+    CREATE TABLE play_log (
+      id        TEXT PRIMARY KEY,
+      room_id   TEXT NOT NULL,
+      title     TEXT NOT NULL,
+      source    TEXT NOT NULL,
+      added_by  TEXT,
+      played_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_play_log_room ON play_log(room_id, played_at);
+    CREATE INDEX idx_play_log_time ON play_log(played_at);
+  `);
+});
+
 export function migrate(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {
