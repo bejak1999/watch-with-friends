@@ -33,6 +33,7 @@ no random strangers. Just you, your friends, and a shared play button.
 | 🛡️ | **Brute-force protection.** Three free mistakes, then every wrong password doubles the wait — 2s, 4s, 8s… up to 15 minutes. |
 | 🎨 | **Themes.** Dark, Midnight (OLED black) and Light, a pickable accent colour, and three densities — saved to your account. |
 | 🧩 | **Survives SponsorBlock.** When an extension skips ahead, the room follows instead of fighting it — one person's skip skips it for everyone. An ad that freezes one player makes the room wait. |
+| 💾 | **One-file backup.** Download everything — accounts, rooms, statistics, pictures — and upload it back to restore. Optionally encrypted with a password. |
 | 📊 | **Statistics.** Watch time, videos played, per-room leaderboards and a two-week activity chart, counted on the server so nobody can inflate them. |
 | 🖼️ | **Profile pictures.** Upload an avatar, cropped and resized in your browser. Admins can fix somebody else's. |
 | 🔍 | **Resolution control.** Pick a rendition for HLS, ARD, Vimeo and Twitch — your choice only, so a slow connection never drags anyone else down. |
@@ -443,18 +444,69 @@ ready, it resumes on its own.
 
 ## 💾 Backup
 
-Everything lives in one directory:
+### From the admin panel
+
+**Admin → Backup → Download backup** produces a single `.wwfbak` file holding every
+account, room, queue, playlist, chat message, statistic and profile picture, plus the
+session key so nobody is signed out by a restore. Uploaded video files are opt-in,
+because they dominate the size.
+
+Restoring is the same page in reverse: upload the file, it is **verified and unpacked
+first**, and nothing is replaced until you restart the container. A corrupt file or a
+wrong password therefore cannot break a running server. What it does replace is
+renamed to `*.replaced-<timestamp>` rather than deleted, so a restore you regret is
+still undoable by hand.
+
+> [!IMPORTANT]
+> Tick **Encrypt with a password** unless the file never leaves an encrypted disk.
+> An unencrypted backup contains password hashes, your whole chat history and your
+> YouTube API key in readable form. Encryption is AES-256-GCM with a scrypt-derived
+> key; a lost password cannot be recovered, by design.
+
+### From the filesystem
+
+Everything still lives in one directory:
 
 ```
 /data
-├── 🗄️  wwf.db          accounts, rooms, queues, playlists, chat
+├── 🗄️  wwf.db          accounts, rooms, queues, playlists, chat, statistics
 ├── 📝  wwf.db-wal
 ├── 🔑  session.key     generated if SESSION_SECRET is unset
+├── 🖼️  avatars/        profile pictures
 └── 📁  uploads/        uploaded video files
 ```
 
-A ZFS snapshot of the dataset is a complete backup. To restore: stop the container,
+A ZFS snapshot of the dataset is a complete backup. To restore, stop the container,
 replace the directory, start it again.
+
+---
+
+## 🔐 What is and is not encrypted
+
+Worth being precise about, because "self-hosted" does not mean "encrypted".
+
+| | |
+|---|---|
+| **Passwords** | Never stored. Only a scrypt hash with a per-user salt, which cannot be reversed. |
+| **Sessions** | Signed JWTs in an `httpOnly` cookie. Signed, not encrypted — they carry only a user id and a version number. |
+| **In transit** | HTTPS end-to-end when reached through your Cloudflare tunnel. |
+| **Backup files** | Encrypted **if you set a password**. Otherwise plain. |
+| **The database on disk** | **Not encrypted.** Chat, room names and your YouTube API key sit in a plain SQLite file. |
+| **Uploads and avatars** | **Not encrypted.** Plain files in the data directory. |
+
+That last pair is normal for a self-hosted app, and the right place to fix it is the
+storage layer rather than the application: on TrueNAS, create the dataset with
+**encryption enabled** (Datasets → Add Dataset → Encryption). Everything then lands on
+an encrypted pool, the app needs no changes, and you keep the key.
+
+Filesystem permissions are the other half: the container runs as uid 1000 and the data
+directory should not be world-readable.
+
+> [!NOTE]
+> Application-level database encryption (SQLCipher) is deliberately not used. It would
+> mean shipping a different SQLite build for a key that has to live on the same machine
+> anyway — dataset encryption gives you the same protection against a stolen disk
+> without that complexity.
 
 ---
 

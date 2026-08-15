@@ -11,6 +11,14 @@ import { activeLockouts, clearLockout } from '../services/rateLimit';
 import { forgetRoom, kickUser } from '../realtime';
 import { deleteAvatarFiles } from './avatars';
 import { globalStats } from '../services/stats';
+import multer from 'multer';
+import {
+  BackupError,
+  cancelRestore,
+  createBackup,
+  pendingRestore,
+  stageRestore,
+} from '../services/backup';
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
@@ -286,6 +294,90 @@ adminRouter.get('/lockouts', (_req, res) => {
 
 adminRouter.delete('/lockouts/:key', (req, res) => {
   clearLockout(decodeURIComponent(req.params.key));
+  res.json({ ok: true });
+});
+
+/* ------------------------------------------------------------------ */
+/* Backup and restore                                                  */
+/* ------------------------------------------------------------------ */
+
+const backupSchema = z.object({
+  includeUploads: z.boolean().optional(),
+  passphrase: z.string().min(8).max(200).optional(),
+});
+
+adminRouter.post('/backup', async (req, res) => {
+  const parsed = backupSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: 'A backup password must be at least 8 characters' });
+    return;
+  }
+
+  try {
+    const result = await createBackup({
+      includeUploads: Boolean(parsed.data.includeUploads),
+      passphrase: parsed.data.passphrase,
+    });
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+    const name = `watch-with-friends-${stamp}${parsed.data.passphrase ? '-encrypted' : ''}.wwfbak`;
+
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+    res.setHeader('X-Backup-Manifest', Buffer.from(JSON.stringify(result.manifest.counts)).toString('base64'));
+    res.sendFile(result.file, (err) => {
+      result.cleanup();
+      if (err && !res.headersSent) res.status(500).json({ error: 'Backup failed while sending' });
+    });
+  } catch (err) {
+    console.error('[backup]', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Backup failed' });
+  }
+});
+
+// Backups can be large, so they stage on disk rather than in memory.
+const restoreUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, config.tmpDir),
+    filename: (_req, _file, cb) => cb(null, `upload-${Date.now()}.wwfbak`),
+  }),
+  limits: { fileSize: 64 * 1024 * 1024 * 1024, files: 1 },
+});
+
+adminRouter.post('/restore', (req, res) => {
+  restoreUpload.single('file')(req, res, async (uploadErr: unknown) => {
+    const file = req.file;
+    const cleanup = () => {
+      if (file?.path) fs.promises.unlink(file.path).catch(() => undefined);
+    };
+    if (uploadErr || !file) {
+      cleanup();
+      res.status(400).json({ error: 'No backup file received' });
+      return;
+    }
+    try {
+      const passphrase = typeof req.body?.passphrase === 'string' && req.body.passphrase ? req.body.passphrase : undefined;
+      const preview = await stageRestore(file.path, passphrase);
+      res.json({
+        staged: true,
+        manifest: preview.manifest,
+        message: 'Backup checked and staged. Restart the container to apply it.',
+      });
+    } catch (err) {
+      res.status(err instanceof BackupError ? 400 : 500).json({
+        error: err instanceof Error ? err.message : 'Restore failed',
+      });
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+adminRouter.get('/restore', (_req, res) => {
+  res.json({ pending: pendingRestore() });
+});
+
+adminRouter.delete('/restore', (_req, res) => {
+  cancelRestore();
   res.json({ ok: true });
 });
 

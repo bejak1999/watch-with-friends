@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { useApp } from '../state/AppState';
 import { Avatar, CopyButton, Field, Icon, Meter, Modal, Spinner, Toggle } from '../components/ui';
 import { AvatarPicker } from '../components/AvatarPicker';
 import { formatBytes, relativeTime } from '../lib/format';
 
-type Tab = 'overview' | 'codes' | 'users' | 'settings';
+type Tab = 'overview' | 'codes' | 'users' | 'settings' | 'backup';
 
 interface InviteCode {
   code: string;
@@ -37,6 +37,14 @@ interface AdminUser {
 
 const GB = 1024 * 1024 * 1024;
 
+const TAB_LABELS: Record<Tab, string> = {
+  overview: 'Overview',
+  codes: 'Codes',
+  users: 'Users',
+  settings: 'Settings',
+  backup: 'Backup',
+};
+
 export function AdminPage() {
   const [tab, setTab] = useState<Tab>('overview');
 
@@ -49,10 +57,10 @@ export function AdminPage() {
         </div>
       </div>
 
-      <div className="tabs" style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', maxWidth: 520 }}>
-        {(['overview', 'codes', 'users', 'settings'] as Tab[]).map((t) => (
+      <div className="tabs" style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', maxWidth: 640 }}>
+        {(['overview', 'codes', 'users', 'settings', 'backup'] as Tab[]).map((t) => (
           <button key={t} className="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
-            {t === 'overview' ? 'Overview' : t === 'codes' ? 'Codes' : t === 'users' ? 'Users' : 'Settings'}
+            {TAB_LABELS[t]}
           </button>
         ))}
       </div>
@@ -61,6 +69,7 @@ export function AdminPage() {
       {tab === 'codes' && <CodesTab />}
       {tab === 'users' && <UsersTab />}
       {tab === 'settings' && <SettingsTab />}
+      {tab === 'backup' && <BackupTab />}
     </div>
   );
 }
@@ -910,6 +919,195 @@ function SettingsTab() {
           {busy ? <span className="spinner" /> : 'Save settings'}
         </button>
       </div>
+    </>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Backup and restore                                                */
+/* ---------------------------------------------------------------- */
+
+interface PendingRestore {
+  createdAt: number;
+  includesUploads: boolean;
+  counts: Record<string, number>;
+}
+
+function BackupTab() {
+  const { toast } = useApp();
+  const [includeUploads, setIncludeUploads] = useState(false);
+  const [passphrase, setPassphrase] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restorePass, setRestorePass] = useState('');
+  const [restoring, setRestoring] = useState(false);
+  const [pending, setPending] = useState<PendingRestore | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const loadPending = useCallback(() => {
+    api
+      .get<{ pending: PendingRestore | null }>('/admin/restore')
+      .then((r) => setPending(r.pending))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(loadPending, [loadPending]);
+
+  const download = async () => {
+    if (passphrase && passphrase.length < 8) {
+      toast('A backup password needs at least 8 characters', 'error');
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch('/api/admin/backup', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ includeUploads, passphrase: passphrase || undefined }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new Error(data?.error || 'Backup failed');
+      }
+
+      const blob = await res.blob();
+      const header = res.headers.get('content-disposition') || '';
+      const name = header.match(/filename="([^"]+)"/)?.[1] ?? 'watch-with-friends.wwfbak';
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast('Backup downloaded', 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Backup failed', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const upload = async () => {
+    if (!restoreFile) return;
+    if (!confirm('Restoring replaces every account, room and statistic on this server. Continue?')) return;
+    setRestoring(true);
+    try {
+      const form = new FormData();
+      form.append('file', restoreFile);
+      if (restorePass) form.append('passphrase', restorePass);
+      const res = await fetch('/api/admin/restore', { method: 'POST', credentials: 'same-origin', body: form });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(data?.error || 'Restore failed');
+      setPending(data.manifest);
+      setRestoreFile(null);
+      setRestorePass('');
+      if (fileRef.current) fileRef.current.value = '';
+      toast('Backup checked and staged', 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Restore failed', 'error');
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  const cancel = async () => {
+    await api.del('/admin/restore');
+    setPending(null);
+    toast('Staged restore discarded', 'success');
+  };
+
+  return (
+    <>
+      {pending && (
+        <section className="panel" style={{ borderColor: 'var(--warning)' }}>
+          <h2>A restore is waiting</h2>
+          <p className="small">
+            The backup from <strong>{new Date(pending.createdAt).toLocaleString()}</strong> has been checked and
+            unpacked. It holds {pending.counts?.users ?? '?'} accounts and {pending.counts?.rooms ?? '?'} rooms.
+          </p>
+          <p className="small muted">
+            <strong>Restart the container to apply it.</strong> Nothing has changed yet, and whatever it replaces
+            is kept on disk as <code>*.replaced-*</code>.
+          </p>
+          <div className="row" style={{ justifyContent: 'flex-end' }}>
+            <button className="btn danger" onClick={cancel}>
+              Discard the staged restore
+            </button>
+          </div>
+        </section>
+      )}
+
+      <section className="panel">
+        <h2>Download a backup</h2>
+        <p className="tiny faint">
+          Every account, room, queue, playlist, chat message, statistic and profile picture, plus the session key
+          so nobody gets signed out. Uploaded video files are optional because they dominate the size.
+        </p>
+
+        <Toggle
+          checked={includeUploads}
+          onChange={setIncludeUploads}
+          label="Include uploaded video files"
+          hint="Leave off for a small, quick backup of the database only."
+        />
+
+        <Field
+          label="Encrypt with a password"
+          hint="Recommended: without it the file holds password hashes, chat history and your API key in readable form. A lost password cannot be recovered."
+        >
+          <input
+            className="input"
+            type="password"
+            value={passphrase}
+            onChange={(e) => setPassphrase(e.target.value)}
+            placeholder="Leave empty for an unencrypted file"
+            autoComplete="new-password"
+          />
+        </Field>
+
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <button className="btn primary" onClick={download} disabled={busy}>
+            {busy ? <span className="spinner" /> : 'Download backup'}
+          </button>
+        </div>
+      </section>
+
+      <section className="panel">
+        <h2>Restore from a backup</h2>
+        <p className="tiny faint">
+          The file is verified and unpacked first. Nothing is replaced until you restart the container, so a bad
+          file cannot break a running server.
+        </p>
+
+        <Field label="Backup file">
+          <input
+            ref={fileRef}
+            className="input"
+            type="file"
+            accept=".wwfbak"
+            style={{ paddingTop: 7 }}
+            onChange={(e) => setRestoreFile(e.target.files?.[0] ?? null)}
+          />
+        </Field>
+
+        <Field label="Password" hint="Only needed if the backup was encrypted.">
+          <input
+            className="input"
+            type="password"
+            value={restorePass}
+            onChange={(e) => setRestorePass(e.target.value)}
+            autoComplete="off"
+          />
+        </Field>
+
+        <div className="row" style={{ justifyContent: 'flex-end' }}>
+          <button className="btn danger" onClick={upload} disabled={restoring || !restoreFile}>
+            {restoring ? <span className="spinner" /> : 'Check and stage restore'}
+          </button>
+        </div>
+      </section>
     </>
   );
 }
