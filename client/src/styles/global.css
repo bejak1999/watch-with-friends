@@ -1388,3 +1388,59 @@ img.avatar { object-fit: cover; }
   color: var(--warning);
   font-size: 0.85rem;
 }
+
+/* ---------------------------------------------------------------- */
+/* Fullscreen control bar                                            */
+/* ---------------------------------------------------------------- */
+
+/**
+ * Fullscreen fills the screen, so drop every sizing cap meant for the page -
+ * including the 16:9 ratio, or a screen that is not 16:9 leaves a gap below
+ * the picture. The video letterboxes itself via object-fit.
+ * Both selectors on purpose: :fullscreen is the browser's own truth and covers
+ * F11 and Esc, the class is what React knows about and drives the bar.
+ */
+.stage.fullscreen,
+.stage:fullscreen {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  aspect-ratio: auto;
+  border: 0;
+  border-radius: 0;
+}
+/* Cursor goes away with the bar, or it sits on the picture forever. */
+.stage.fullscreen.idle { cursor: none; }
+
+.fs-bar {
+  position: absolute;
+  inset: auto 0 0 0;
+  z-index: 7;
+  padding: 26px 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Fades up out of the picture rather than sitting on a hard edge. */
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.55) 55%, transparent 100%);
+  color: #f2f3f8;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
+}
+.fs-bar[data-visible='true'] {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+/* The bar paints its own contrast, so ignore the theme's surface colours. */
+.fs-bar .btn.ghost { color: #f2f3f8; }
+.fs-bar .btn.ghost:hover:not(:disabled) { background: rgba(255, 255, 255, 0.16); }
+.fs-bar .scrub .track { background: rgba(255, 255, 255, 0.26); }
+.fs-bar .scrub .loaded { background: #fff; opacity: 0.42; }
+.fs-bar .mono, .fs-bar .small { color: #f2f3f8; }
+
+@media (max-width: 760px) {
+  .fs-bar { padding: 22px 10px 10px; }
+  .fs-bar .volume { display: none; }
+}

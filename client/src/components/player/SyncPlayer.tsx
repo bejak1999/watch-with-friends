@@ -218,13 +218,38 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       const localTime = adapter.getTime();
       onReport(localTime);
 
+      /**
+       * Somebody who has not pressed "Join playback" is not watching yet, so
+       * they must never make the room wait. This is what broke stepping out of
+       * a room and back in: the fresh player buffers while unarmed, reported
+       * it, and paused everyone else - and because the clear below used to sit
+       * under the early return, it never took it back. "Waiting for everyone"
+       * then stayed up for good.
+       */
+      if (!isArmed) {
+        if (reportedBuffering.current) {
+          reportedBuffering.current = false;
+          onBuffering(false);
+        }
+        return;
+      }
+
       // A stall that outlasts the grace period tells the room to wait for us.
       if (bufferingSince.current > 0 && !reportedBuffering.current && Date.now() - bufferingSince.current > 900) {
         reportedBuffering.current = true;
         onBuffering(true);
       }
 
-      if (adapter.isLive || !isArmed) return;
+      if (adapter.isLive) {
+        // A live edge has no drift or stall detector of its own, so the
+        // adapter's own buffering events are the only truth. Mirror them here
+        // too rather than leaving the clear stranded below this return.
+        if (reportedBuffering.current && bufferingSince.current === 0) {
+          reportedBuffering.current = false;
+          onBuffering(false);
+        }
+        return;
+      }
 
       const target = expectedPosition(pb, off);
       const drift = localTime - target;

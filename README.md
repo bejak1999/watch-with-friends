@@ -37,7 +37,7 @@ no random strangers. Just you, your friends, and a shared play button.
 | 📊 | **Statistics.** Watch time, videos played, per-room leaderboards and a two-week activity chart, counted on the server so nobody can inflate them. |
 | 🖼️ | **Profile pictures.** Upload an avatar, cropped and resized in your browser. Admins can fix somebody else's. |
 | 🔍 | **Resolution control.** Pick a rendition for HLS, ARD, Vimeo and Twitch — your choice only, so a slow connection never drags anyone else down. |
-| 📱 | **Works on phones.** Responsive layout, fullscreen, keyboard shortcuts, and controls that adapt instead of clipping. |
+| 📱 | **Works on phones.** Responsive layout, keyboard shortcuts, and controls that adapt instead of clipping. Fullscreen gets its own bar that fades in on movement and out again when you settle. |
 
 ## 📺 Supported sources
 
@@ -407,7 +407,7 @@ microphone and geolocation.
 | `C` | 💬 Subtitles on or off |
 | `B` | ↔️ Hide or show the queue and chat |
 | `D` | 🐞 Diagnostics overlay |
-| `F` | 🖥️ Fullscreen |
+| `F` | 🖥️ Fullscreen — the control bar rides on the picture and fades out when the mouse stops |
 
 
 ---

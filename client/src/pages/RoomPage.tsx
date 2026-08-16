@@ -57,6 +57,10 @@ export function RoomPage() {
   // Collapsing the side panel is remembered per device.
   const [sideCollapsed, setSideCollapsed] = useState(() => localStorage.getItem('wwf.sideCollapsed') === '1');
   const [debugOpen, setDebugOpen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  /** Fullscreen has no chrome of its own, so the bar rides on the picture. */
+  const [chromeVisible, setChromeVisible] = useState(true);
+  const hideChromeAt = useRef<number>(0);
 
   const canControl = room?.permissions.canControl ?? false;
   const canQueue = room?.permissions.canQueue ?? false;
@@ -78,6 +82,40 @@ export function RoomPage() {
     }, 250);
     return () => window.clearInterval(timer);
   }, [playback, serverOffset]);
+
+  /* Follow the browser's own fullscreen state - Esc and F11 bypass our button. */
+  useEffect(() => {
+    const sync = () => {
+      const on = Boolean(document.fullscreenElement);
+      setFullscreen(on);
+      // Always start visible so the controls are discoverable on entry.
+      if (on) showChrome();
+    };
+    document.addEventListener('fullscreenchange', sync);
+    // Older Safari and Chrome only fire the prefixed event.
+    document.addEventListener('webkitfullscreenchange', sync);
+    return () => {
+      document.removeEventListener('fullscreenchange', sync);
+      document.removeEventListener('webkitfullscreenchange', sync);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /**
+   * Hide the fullscreen bar a few seconds after the last movement, and take the
+   * cursor with it. Checked on a timer rather than with a per-move setTimeout so
+   * a moving mouse does not churn timers 60 times a second.
+   */
+  useEffect(() => {
+    if (!fullscreen) {
+      setChromeVisible(true);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setChromeVisible(Date.now() < hideChromeAt.current);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [fullscreen]);
 
   /* Unread chat badge while another tab is open. */
   useEffect(() => {
@@ -137,6 +175,11 @@ export function RoomPage() {
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canControl, playback, serverOffset, captionsAvailable]);
+
+  const showChrome = useCallback(() => {
+    hideChromeAt.current = Date.now() + 2800;
+    setChromeVisible(true);
+  }, []);
 
   const currentPosition = () => {
     const player = playerRef.current;
@@ -232,7 +275,14 @@ export function RoomPage() {
       style={sideCollapsed ? { gridTemplateColumns: '1fr' } : undefined}
     >
       <div className="stage-col">
-        <div className={`stage${sideCollapsed ? ' wide' : ''}`} ref={stageRef}>
+        <div
+          className={`stage${sideCollapsed ? ' wide' : ''}${fullscreen ? ' fullscreen' : ''}${
+            fullscreen && !chromeVisible ? ' idle' : ''
+          }`}
+          ref={stageRef}
+          onPointerMove={fullscreen ? showChrome : undefined}
+          onPointerDown={fullscreen ? showChrome : undefined}
+        >
           <SyncPlayer
             ref={playerRef}
             item={currentItem}
@@ -300,6 +350,66 @@ export function RoomPage() {
           {!connected && (
             <div className="pill" style={{ position: 'absolute', top: 12, right: 12, zIndex: 6, height: 26 }}>
               <span className="dot off" /> Reconnecting…
+            </div>
+          )}
+
+          {/* Fullscreen has no control bar under it, so put one on the picture. */}
+          {fullscreen && (
+            <div className="fs-bar" data-visible={chromeVisible} onPointerMove={showChrome}>
+              <Scrubber
+                progress={progress}
+                loaded={loaded}
+                duration={duration}
+                disabled={!canControl || duration <= 0}
+                onScrub={(seconds) => setScrubbing(seconds)}
+                onCommit={(seconds) => {
+                  setScrubbing(null);
+                  actions.seek(seconds);
+                }}
+              />
+              <div className="row" style={{ gap: 6, marginTop: 4 }}>
+                <button className="btn ghost icon" onClick={togglePlay} title="Play or pause (space)">
+                  <Icon name={playback.isPlaying ? 'pause' : 'play'} size={18} />
+                </button>
+                <button className="btn ghost icon" onClick={() => actions.next()} title="Next (n)" disabled={!canControl}>
+                  <Icon name="next" size={16} />
+                </button>
+                <button className="btn ghost icon" onClick={() => setMuted((m) => !m)} title="Mute (m)">
+                  <Icon name={muted || volume === 0 ? 'mute' : 'volume'} size={16} />
+                </button>
+                <input
+                  className="volume"
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={muted ? 0 : volume}
+                  onChange={(e) => {
+                    setVolume(Number(e.target.value));
+                    setMuted(false);
+                  }}
+                  aria-label="Volume"
+                />
+                <span className="mono tiny faint" style={{ marginLeft: 4 }}>
+                  {formatTime(displayPosition)} / {formatTime(duration)}
+                </span>
+                <span className="truncate small grow" style={{ minWidth: 0, opacity: 0.85 }}>
+                  {currentItem?.title}
+                </span>
+                {captionsAvailable && (
+                  <button
+                    className="btn ghost icon"
+                    onClick={() => setCaptionsOn((v) => !v)}
+                    title={captionsOn ? 'Turn subtitles off (c)' : 'Turn subtitles on (c)'}
+                    style={captionsOn ? { color: 'var(--accent)' } : undefined}
+                  >
+                    <Icon name="captions" size={16} />
+                  </button>
+                )}
+                <button className="btn ghost icon" onClick={toggleFullscreen} title="Leave fullscreen (f)">
+                  <Icon name="collapse" size={16} />
+                </button>
+              </div>
             </div>
           )}
         </div>
