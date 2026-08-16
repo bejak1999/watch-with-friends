@@ -10,6 +10,8 @@ export interface SyncPlayerHandle {
   /** Local player position in seconds, used by the scrub bar. */
   getTime(): number;
   getDuration(): number;
+  /** Seconds downloaded from zero, for the grey loaded bar. */
+  getBuffered(): number;
   /** Drift against the room clock, in seconds. Positive means we are ahead. */
   getDrift(): number;
   isReady(): boolean;
@@ -321,6 +323,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       setCaptions: (enabled: boolean) => adapterRef.current?.setCaptions?.(enabled),
       getTime: () => adapterRef.current?.getTime() ?? 0,
       getDuration: () => adapterRef.current?.getDuration() ?? 0,
+      getBuffered: () => adapterRef.current?.getBuffered?.() ?? 0,
       getDrift: () => driftRef.current,
       isReady: () => Boolean(adapterRef.current?.ready),
     }),

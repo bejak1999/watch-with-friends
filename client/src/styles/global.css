@@ -661,9 +661,26 @@ img.avatar { object-fit: cover; }
   border-radius: var(--radius-lg);
   overflow: hidden;
   border: 1px solid var(--border);
-  flex: none;
+  /**
+   * 16:9 sets the height it *wants*. Shrinking is allowed so a wide window can
+   * never make the picture taller than the space it has - it used to push the
+   * control bar off the bottom of the screen and cover the queue below it.
+   * The video letterboxes inside via object-fit, so nothing is ever cropped.
+   */
+  flex: 0 1 auto;
+  min-height: 0;
+  /**
+   * ...and cap the width by what the height allows, so the box shrinks in both
+   * directions at once. Capping the height alone leaves a full-width black
+   * letterbox with a small picture floating in the middle of it.
+   * The subtrahend is the chrome around the stage: control bar, room header,
+   * padding.
+   */
+  width: min(100%, calc((100vh - 190px) * 16 / 9));
+  margin-inline: auto;
 }
-.stage.theater { border-radius: 0; border-left: 0; border-right: 0; }
+/* Full-bleed once the queue and chat are folded away. */
+.stage.wide { border-radius: 0; border-left: 0; border-right: 0; }
 /* Each embed nests its own wrapper, so match at any depth rather than a direct child. */
 .stage .player-mount,
 .stage iframe,
@@ -1173,8 +1190,19 @@ img.avatar { object-fit: cover; }
     padding: 0;
     gap: 0;
     height: auto;
+    /**
+     * The parent is a column flex box with a definite height, so the default
+     * flex-shrink squeezed this below its content. Both grid rows then had to
+     * share the leftover, and the stage lost its aspect ratio and spilled over
+     * the queue. Refuse to shrink and let the page scroll instead, which is
+     * what a stacked layout should do anyway.
+     */
+    flex: none;
   }
   .stage { border-radius: 0; border-left: 0; border-right: 0; border-top: 0; }
+  /* Stacked layout: the mobile bar costs height, and the queue below needs to
+     stay reachable without the video swallowing the screen. */
+  .stage { width: min(100%, calc((100vh - 230px) * 16 / 9)); }
   .stage-col { gap: 0; }
   .controls { border-radius: 0; border-left: 0; border-right: 0; }
   /* Full-bleed stage, but text still needs a margin from the screen edge. */
@@ -1249,7 +1277,18 @@ img.avatar { object-fit: cover; }
 /* ---------------------------------------------------------------- */
 
 .app-shell.nav-collapsed { grid-template-columns: 0 1fr; }
-.app-shell.nav-collapsed .sidebar { display: none; }
+/**
+ * Never display:none the sidebar here. It is a grid item, and removing it makes
+ * the content auto-place into the zero-width first column instead - the whole
+ * page collapses to nothing. Squash it to zero width and keep it in the grid.
+ */
+.app-shell.nav-collapsed .sidebar {
+  width: 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+}
 
 .nav-collapse-toggle {
   position: fixed;
@@ -1329,3 +1368,23 @@ img.avatar { object-fit: cover; }
 .log-scope { color: var(--accent); width: 58px; flex: 0 0 58px; }
 .log-msg { flex: 1 1 auto; word-break: break-word; }
 .log-detail { color: var(--text-faint); }
+
+/* The grey "downloaded this far" bar, behind the played part. */
+.scrub .loaded {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--text-faint);
+  opacity: 0.34;
+  border-radius: 99px;
+  transition: width 0.25s linear;
+}
+
+/* Not an error - the upload worked, but it may not play for everyone. */
+.form-warning {
+  padding: 9px 12px;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  color: var(--warning);
+  font-size: 0.85rem;
+}

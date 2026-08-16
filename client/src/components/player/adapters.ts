@@ -31,6 +31,11 @@ export interface Adapter {
   seek(seconds: number): void;
   getTime(): number;
   getDuration(): number;
+  /**
+   * How far ahead the player has downloaded, in seconds from zero. Drives the
+   * grey "loaded" bar. Return 0 when the player cannot tell us.
+   */
+  getBuffered?(): number;
   setVolume(volume: number): void;
   setMuted(muted: boolean): void;
   setRate(rate: number): void;
@@ -201,6 +206,13 @@ class YouTubeAdapter implements Adapter {
   seek(s: number) { this.player?.seekTo?.(s, true); }
   getTime() { return this.player?.getCurrentTime?.() ?? 0; }
   getDuration() { return this.player?.getDuration?.() ?? 0; }
+
+  getBuffered() {
+    // YouTube reports a fraction of the whole video rather than a time range.
+    const fraction = this.player?.getVideoLoadedFraction?.() ?? 0;
+    return fraction * this.getDuration();
+  }
+
   setVolume(v: number) { this.player?.setVolume?.(Math.round(v * 100)); }
   setMuted(m: boolean) { m ? this.player?.mute?.() : this.player?.unMute?.(); }
   setRate(r: number) { this.player?.setPlaybackRate?.(r); }
@@ -275,6 +287,7 @@ class VimeoAdapter implements Adapter {
   private destroyed = false;
   private time = 0;
   private duration = 0;
+  private buffered = 0;
 
   constructor(
     private mount: HTMLElement,
@@ -336,6 +349,10 @@ class VimeoAdapter implements Adapter {
       })
       .catch(() => undefined);
 
+    // Vimeo's "progress" is how much is downloaded, not how much is played.
+    this.player.on('progress', (d: { seconds: number }) => {
+      if (typeof d?.seconds === 'number') this.buffered = d.seconds;
+    });
     this.player.on('bufferstart', () => this.cb.onBuffering(true));
     this.player.on('bufferend', () => this.cb.onBuffering(false));
     this.player.on('ended', () => this.cb.onEnded());
@@ -347,6 +364,7 @@ class VimeoAdapter implements Adapter {
   seek(s: number) { this.time = s; this.player?.setCurrentTime?.(s).catch(() => undefined); }
   getTime() { return this.time; }
   getDuration() { return this.duration; }
+  getBuffered() { return this.buffered; }
   setVolume(v: number) { this.player?.setVolume?.(v).catch(() => undefined); }
   setMuted(m: boolean) { this.player?.setMuted?.(m).catch(() => undefined); }
   setRate(r: number) { this.player?.setPlaybackRate?.(r).catch(() => undefined); }
@@ -596,6 +614,9 @@ class HtmlAdapter implements Adapter {
   private hls: any = null;
   private destroyed = false;
   private captionsWanted = false;
+  /** Set by play() so a source arriving late still starts playing. */
+  private wantsPlay = false;
+  private reportedTrackProblem = false;
 
   private src = '';
 
@@ -603,7 +624,8 @@ class HtmlAdapter implements Adapter {
     private mount: HTMLElement,
     /** A promise lets the ARD resolver hand us a fresh CDN link. */
     private source: string | Promise<string>,
-    private cb: AdapterCallbacks
+    private cb: AdapterCallbacks,
+    private audioOnly = false
   ) {
     this.video = document.createElement('video');
     this.video.playsInline = true;
@@ -623,17 +645,54 @@ class HtmlAdapter implements Adapter {
       this.announceCaptions();
       if (Number.isFinite(this.video.duration) && this.video.duration > 0) this.cb.onDuration(this.video.duration);
       this.cb.onReady();
+      this.checkVideoTrack();
+      // A pending play could not run while there was no source. Run it now.
+      if (this.wantsPlay) this.play();
     });
     this.video.addEventListener('waiting', () => this.cb.onBuffering(true));
     this.video.addEventListener('stalled', () => this.cb.onBuffering(true));
-    this.video.addEventListener('playing', () => this.cb.onBuffering(false));
+    this.video.addEventListener('playing', () => {
+      this.cb.onBuffering(false);
+      this.checkVideoTrack();
+    });
     this.video.addEventListener('canplay', () => this.cb.onBuffering(false));
     this.video.addEventListener('ended', () => this.cb.onEnded());
-    this.video.addEventListener('error', () => {
-      this.cb.onError('This video could not be played. The link may be broken or blocked by CORS.');
-    });
+    this.video.addEventListener('error', () => this.reportMediaError());
 
     void this.attach();
+  }
+
+  /**
+   * The nastiest failure mode there is: the container and the audio track are
+   * fine, so the browser happily plays sound, but it cannot decode the video
+   * codec - and it fires no error at all. You get a black rectangle and no
+   * explanation. HEVC/H.265 in an MP4 does exactly this in Edge without the
+   * HEVC extension, and in Firefox always.
+   */
+  private checkVideoTrack() {
+    if (this.destroyed || this.reportedTrackProblem) return;
+    if (this.audioOnly) return;
+    if (this.video.videoWidth > 0) return;
+    // readyState >= HAVE_CURRENT_DATA means it has decoded something to show.
+    if (this.video.readyState < 2) return;
+
+    this.reportedTrackProblem = true;
+    this.cb.onError(
+      'This browser can play the sound but not the picture of this file - its video codec is not supported ' +
+        '(H.265/HEVC is the usual culprit). Re-encode it as H.264 in an .mp4, or watch it in Chrome.'
+    );
+  }
+
+  private reportMediaError() {
+    const err = this.video.error;
+    const detail: Record<number, string> = {
+      1: 'Loading was aborted.',
+      2: 'The network dropped while loading this file.',
+      3: 'This file is damaged, or its codec cannot be decoded here.',
+      4: 'This browser cannot play this file. Its format or codec is unsupported - ' +
+        'MKV, MOV and H.265/HEVC often fail. An .mp4 with H.264 video and AAC audio plays everywhere.',
+    };
+    this.cb.onError(detail[err?.code ?? 0] || 'This video could not be played.');
   }
 
   private async attach() {
@@ -689,16 +748,32 @@ class HtmlAdapter implements Adapter {
   }
 
   play() {
+    this.wantsPlay = true;
+    // Calling play() before attach() has set a source rejects, and nothing ever
+    // retried it: the room said "playing" while this tab sat on a black frame
+    // until you left and rejoined. Remember the intent and let attach run it.
+    if (!this.video.currentSrc && !this.video.src) return;
     this.video.play().catch(() => {
       // Autoplay was refused; a muted retry keeps the room in sync visually.
       this.video.muted = true;
       this.video.play().catch(() => undefined);
     });
   }
-  pause() { this.video.pause(); }
+  pause() { this.wantsPlay = false; this.video.pause(); }
   seek(s: number) { try { this.video.currentTime = s; } catch { /* not seekable yet */ } }
   getTime() { return this.video.currentTime || 0; }
   getDuration() { return Number.isFinite(this.video.duration) ? this.video.duration : 0; }
+
+  getBuffered() {
+    const ranges = this.video.buffered;
+    const at = this.video.currentTime || 0;
+    // Only the range we are actually inside counts. A file seeked around in has
+    // several islands of data, and the last one says nothing about the playhead.
+    for (let i = 0; i < ranges.length; i++) {
+      if (ranges.start(i) <= at + 0.5 && ranges.end(i) >= at) return ranges.end(i);
+    }
+    return ranges.length > 0 ? ranges.end(ranges.length - 1) : 0;
+  }
   setVolume(v: number) { this.video.volume = Math.max(0, Math.min(1, v)); }
   setMuted(m: boolean) { this.video.muted = m; }
   setRate(r: number) { this.video.playbackRate = r; }
@@ -757,7 +832,11 @@ async function resolveStream(provider: string, id: string): Promise<string> {
   return data.url as string;
 }
 
+/** Music uploads have no picture by design, so never warn about a missing one. */
+const AUDIO_ONLY = /\.(mp3|m4a|flac|wav|ogg|oga|aac|opus)(\?|#|$)/i;
+
 export function createAdapter(mount: HTMLElement, item: QueueItem, cb: AdapterCallbacks): Adapter {
+  const audioOnly = AUDIO_ONLY.test(item.title || '') || AUDIO_ONLY.test(item.url || '');
   switch (item.source) {
     case 'youtube':
       return new YouTubeAdapter(mount, item.sourceId, cb);
@@ -768,14 +847,14 @@ export function createAdapter(mount: HTMLElement, item: QueueItem, cb: AdapterCa
     case 'twitch_live':
       return new TwitchAdapter(mount, item.sourceId, true, cb);
     case 'upload':
-      return new HtmlAdapter(mount, item.url || `/api/uploads/${item.sourceId}/file`, cb);
+      return new HtmlAdapter(mount, item.url || `/api/uploads/${item.sourceId}/file`, cb, audioOnly);
     case 'dailymotion':
       return new DailymotionAdapter(mount, item.sourceId, cb);
     default:
       // Mediatheken and PeerTube resolve to a fresh signed URL on every play.
       if (FRESH_STREAM_SOURCES.has(item.source)) {
-        return new HtmlAdapter(mount, resolveStream(item.source, item.sourceId), cb);
+        return new HtmlAdapter(mount, resolveStream(item.source, item.sourceId), cb, audioOnly);
       }
-      return new HtmlAdapter(mount, item.url || item.sourceId, cb);
+      return new HtmlAdapter(mount, item.url || item.sourceId, cb, audioOnly);
   }
 }

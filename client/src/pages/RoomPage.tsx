@@ -46,8 +46,8 @@ export function RoomPage() {
   const [volume, setVolume] = useState(() => Number(localStorage.getItem('wwf.volume') ?? 0.8));
   const [muted, setMuted] = useState(() => localStorage.getItem('wwf.muted') === '1');
   const [localTime, setLocalTime] = useState(0);
+  const [loadedTime, setLoadedTime] = useState(0);
   const [scrubbing, setScrubbing] = useState<number | null>(null);
-  const [theater, setTheater] = useState(false);
   const [unread, setUnread] = useState(0);
   const [playerFailed, setPlayerFailed] = useState(false);
   const [qualities, setQualities] = useState<QualityOption[]>([]);
@@ -74,6 +74,7 @@ export function RoomPage() {
       // rather than treating a falsy time as "no reading yet".
       const player = playerRef.current;
       setLocalTime(player?.isReady() ? player.getTime() : expectedPosition(playback, serverOffset));
+      setLoadedTime(player?.getBuffered() ?? 0);
     }, 250);
     return () => window.clearInterval(timer);
   }, [playback, serverOffset]);
@@ -118,9 +119,6 @@ export function RoomPage() {
           break;
         case 'f':
           toggleFullscreen();
-          break;
-        case 't':
-          setTheater((v) => !v);
           break;
         case 'c':
           if (captionsAvailable) setCaptionsOn((v) => !v);
@@ -226,14 +224,15 @@ export function RoomPage() {
 
   const displayPosition = scrubbing ?? localTime;
   const progress = duration > 0 ? Math.min(100, (displayPosition / duration) * 100) : 0;
+  const loaded = duration > 0 ? Math.min(100, (loadedTime / duration) * 100) : 0;
 
   return (
     <div
       className="room-layout"
-      style={theater || sideCollapsed ? { gridTemplateColumns: '1fr' } : undefined}
+      style={sideCollapsed ? { gridTemplateColumns: '1fr' } : undefined}
     >
       <div className="stage-col">
-        <div className={`stage${theater ? ' theater' : ''}`} ref={stageRef}>
+        <div className={`stage${sideCollapsed ? ' wide' : ''}`} ref={stageRef}>
           <SyncPlayer
             ref={playerRef}
             item={currentItem}
@@ -309,6 +308,7 @@ export function RoomPage() {
         <div className="controls">
           <Scrubber
             progress={progress}
+            loaded={loaded}
             duration={duration}
             disabled={!canControl || duration <= 0}
             onScrub={(seconds) => setScrubbing(seconds)}
@@ -414,7 +414,7 @@ export function RoomPage() {
               <button
                 className="btn ghost icon hide-sm"
                 onClick={() => setSideCollapsed((v) => !v)}
-                title={sideCollapsed ? 'Show the side panel (b)' : 'Hide the side panel (b)'}
+                title={sideCollapsed ? 'Show the queue and chat (b)' : 'Hide the queue and chat (b)'}
                 style={sideCollapsed ? { color: 'var(--accent)' } : undefined}
               >
                 <Icon name="panel-right" size={16} />
@@ -426,13 +426,6 @@ export function RoomPage() {
                 style={debugOpen ? { color: 'var(--accent)' } : undefined}
               >
                 <Icon name="bug" size={16} />
-              </button>
-              <button
-                className="btn ghost icon hide-sm"
-                onClick={() => setTheater((v) => !v)}
-                title="Theater mode (t)"
-              >
-                <Icon name={theater ? 'collapse' : 'expand'} size={16} />
               </button>
               <button className="btn ghost icon" onClick={toggleFullscreen} title="Fullscreen (f)">
                 <Icon name="expand" size={16} />
@@ -467,7 +460,7 @@ export function RoomPage() {
         </div>
       </div>
 
-      {!theater && !sideCollapsed && (
+      {!sideCollapsed && (
         <aside className="side">
           <div className="tabs" role="tablist">
             <button className="tab" role="tab" aria-selected={tab === 'queue'} onClick={() => setTab('queue')}>
@@ -538,12 +531,15 @@ export function RoomPage() {
 
 function Scrubber({
   progress,
+  loaded,
   duration,
   disabled,
   onScrub,
   onCommit,
 }: {
   progress: number;
+  /** How much is downloaded, as a percentage. Drawn behind the played part. */
+  loaded: number;
   duration: number;
   disabled: boolean;
   onScrub: (seconds: number) => void;
@@ -594,6 +590,7 @@ function Scrubber({
       tabIndex={disabled ? -1 : 0}
     >
       <div className="track">
+        <div className="loaded" style={{ width: `${Math.max(loaded, progress)}%` }} />
         <div className="fill" style={{ width: `${progress}%` }} />
       </div>
       <div className="knob" style={{ left: `${progress}%` }} />
@@ -641,6 +638,7 @@ function DebugPanel({
   const local = player.current?.getTime() ?? 0;
   const expected = expectedPosition(playback, serverOffset);
   const drift = player.current?.getDrift() ?? 0;
+  const buffered = player.current?.getBuffered() ?? 0;
   const buffering = members.filter((m) => m.buffering).map((m) => m.displayName);
 
   const rows: Array<[string, string]> = [
@@ -649,6 +647,12 @@ function DebugPanel({
     ['Room says', `${playback.isPlaying ? 'playing' : 'paused'} @ ${expected.toFixed(2)}s (rate ${playback.rate}x)`],
     ['This player', `${player.current?.isReady() ? 'ready' : 'loading'} @ ${local.toFixed(2)}s`],
     ['Drift', `${drift >= 0 ? '+' : ''}${drift.toFixed(2)}s ${Math.abs(drift) > 2 ? '(correcting)' : '(in sync)'}`],
+    [
+      'Loaded',
+      buffered > 0
+        ? `${buffered.toFixed(1)}s downloaded (${(buffered - local).toFixed(1)}s ahead of the playhead)`
+        : 'the player does not report this',
+    ],
     ['Waiting for buffer', waitingForBuffer ? `yes${buffering.length ? `: ${buffering.join(', ')}` : ''}` : 'no'],
     ['Buffering now', buffering.length ? buffering.join(', ') : 'nobody'],
     ['Source', currentItem ? `${currentItem.source} · ${currentItem.sourceId.slice(0, 40)}` : 'nothing queued'],

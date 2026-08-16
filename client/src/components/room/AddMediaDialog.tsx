@@ -351,11 +351,49 @@ function SearchTab({ enabled, onAdd }: { enabled: boolean; onAdd: (items: MediaI
 /* Upload tab                                                        */
 /* ---------------------------------------------------------------- */
 
+const AUDIO_FILE = /\.(mp3|m4a|flac|wav|ogg|oga|aac|opus)$/i;
+/** Containers no browser agrees on. They may work for you and nobody else. */
+const RISKY_CONTAINER = /\.(mkv|avi|wmv|flv|ts|m2ts|mpg|mpeg|3gp)$/i;
+
+/**
+ * Play the file locally before sending it, and see whether a picture actually
+ * appears. This is the only reliable way to catch H.265/HEVC: the browser
+ * decodes the audio happily and simply never produces a frame, without ever
+ * raising an error. Better to say so now than after a 4 GB upload.
+ */
+function inspectFile(file: File): Promise<{ playable: boolean; hasPicture: boolean }> {
+  return new Promise((resolve) => {
+    if (AUDIO_FILE.test(file.name)) {
+      resolve({ playable: true, hasPicture: true });
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const probe = document.createElement('video');
+    probe.preload = 'metadata';
+    probe.muted = true;
+    let settled = false;
+    const finish = (result: { playable: boolean; hasPicture: boolean }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      URL.revokeObjectURL(url);
+      probe.removeAttribute('src');
+      resolve(result);
+    };
+    // A file we cannot decode at all never fires either event.
+    const timer = window.setTimeout(() => finish({ playable: true, hasPicture: true }), 5000);
+    probe.addEventListener('loadeddata', () => finish({ playable: true, hasPicture: probe.videoWidth > 0 }));
+    probe.addEventListener('error', () => finish({ playable: false, hasPicture: false }));
+    probe.src = url;
+  });
+}
+
 function UploadTab({ onAdd }: { onAdd: (items: MediaItem[]) => void }) {
   const [stats, setStats] = useState<StorageStats | null>(null);
   const [files, setFiles] = useState<Array<{ id: string; name: string; size: number; url: string }>>([]);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -373,8 +411,25 @@ function UploadTab({ onAdd }: { onAdd: (items: MediaItem[]) => void }) {
 
   const send = async (file: File) => {
     setError(null);
+    setWarning(null);
     setProgress(0);
     try {
+      const verdict = await inspectFile(file);
+      if (!verdict.playable) {
+        setWarning(
+          `"${file.name}" will not play in a browser. Convert it to an .mp4 with H.264 video and AAC audio first.`
+        );
+      } else if (!verdict.hasPicture) {
+        setWarning(
+          `"${file.name}" plays sound but shows no picture here - its video codec (usually H.265/HEVC) is not ` +
+            'supported. Convert it to H.264 or your friends will see a black screen.'
+        );
+      } else if (RISKY_CONTAINER.test(file.name)) {
+        setWarning(
+          `"${file.name}" plays for you, but this container does not work in every browser. ` +
+            'An .mp4 is the safe choice if someone reports a black screen.'
+        );
+      }
       const res = await api.upload<{ upload: { id: string; name: string; size: number; url: string }; stats: StorageStats }>(
         '/uploads',
         file,
@@ -465,6 +520,7 @@ function UploadTab({ onAdd }: { onAdd: (items: MediaItem[]) => void }) {
       />
 
       {error && <div className="form-error">{error}</div>}
+      {warning && <div className="form-warning">{warning}</div>}
 
       {files.length > 0 && (
         <>

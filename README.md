@@ -56,6 +56,18 @@ no random strangers. Just you, your friends, and a shared play button.
 | 🔗 **Direct links** | `.mp4` · `.webm` · `.mkv` · `.m3u8` (HLS) · audio files |
 | 📤 **Uploads** | Streamed from your own server, with admin-set storage quotas |
 
+> [!TIP]
+> **Uploading? Use `.mp4` with H.264 video and AAC audio.** That combination plays in
+> every browser. **H.265/HEVC is the one to avoid**: Edge plays its sound but shows a
+> black picture, and Firefox refuses it outright — and the browser reports no error
+> while doing it. The uploader now test-plays your file before sending and warns you
+> if it looks like that, and the player says so plainly instead of showing a black
+> rectangle. To convert:
+>
+> ```bash
+> ffmpeg -i input.mkv -c:v libx264 -pix_fmt yuv420p -c:a aac output.mp4
+> ```
+
 **Search once, find everything.** The Search tab has a *Mediatheken* mode backed by
 MediathekViewWeb, which indexes ARD, ZDF, 3sat, arte, ORF, SRF, DW and every regional
 channel at the same time — no API key needed. YouTube search needs a key; the
@@ -393,10 +405,10 @@ microphone and geolocation.
 | `N` | ⏭️ Next in queue |
 | `M` | 🔇 Mute |
 | `C` | 💬 Subtitles on or off |
-| `B` | ↔️ Hide or show the side panel |
+| `B` | ↔️ Hide or show the queue and chat |
 | `D` | 🐞 Diagnostics overlay |
 | `F` | 🖥️ Fullscreen |
-| `T` | 🎦 Theater mode |
+
 
 ---
 
@@ -415,6 +427,7 @@ control bar. It shows, live:
 | This player | what your player is actually doing |
 | Drift | the gap between the two, and whether it is being corrected |
 | Waiting for buffer | who the room is waiting on |
+| Loaded | how far ahead the video has downloaded — also the grey bar on the seek slider |
 | Source, Room, Online | which provider, which room, how many people |
 
 **Copy** puts the whole table on your clipboard — paste it straight into a bug report.
