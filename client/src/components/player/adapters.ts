@@ -8,6 +8,8 @@ export interface QualityOption {
 export interface AdapterCallbacks {
   /** Fired once the player knows which resolutions it can offer. */
   onQualities?: (options: QualityOption[], activeId: string) => void;
+  /** Fired when the player reveals whether it has subtitles at all. */
+  onCaptionsAvailable?: (available: boolean) => void;
   onReady: () => void;
   onEnded: () => void;
   onBuffering: (buffering: boolean) => void;
@@ -34,6 +36,9 @@ export interface Adapter {
   setRate(rate: number): void;
   /** Resolution is a per-viewer choice, never synced - bandwidth differs. */
   setQuality?(id: string): void;
+  /** Subtitles are personal too. Undefined means the source has none. */
+  setCaptions?(enabled: boolean): void;
+  readonly supportsCaptions?: boolean;
   destroy(): void;
 }
 
@@ -107,6 +112,7 @@ class YouTubeAdapter implements Adapter {
   private player: any = null;
   private destroyed = false;
   private lastState = -1;
+  private captionsWanted = false;
 
   constructor(
     private mount: HTMLElement,
@@ -141,6 +147,7 @@ class YouTubeAdapter implements Adapter {
         fs: 0,
         playsinline: 1,
         iv_load_policy: 3,
+        cc_load_policy: 0,
         origin: window.location.origin,
       },
       events: {
@@ -149,6 +156,12 @@ class YouTubeAdapter implements Adapter {
           this.ready = true;
           const d = this.player.getDuration?.();
           if (d > 0) this.cb.onDuration(d);
+          // Offer the control straight away. YouTube only fills in its track
+          // list after the caption module loads, so waiting for a definitive
+          // answer would mean no CC button until the user hits play - which is
+          // exactly when they want it, because that is when subtitles appear.
+          this.cb.onCaptionsAvailable?.(true);
+          this.applyCaptions();
           this.cb.onReady();
         },
         onStateChange: (e: { data: number }) => {
@@ -163,6 +176,9 @@ class YouTubeAdapter implements Adapter {
             const d = this.player.getDuration?.();
             if (d > 0) this.cb.onDuration(d);
             this.publishQualities();
+            // YouTube re-adds the module when playback starts, so re-assert.
+            this.applyCaptions();
+            this.cb.onCaptionsAvailable?.(true);
           }
           this.lastState = e.data;
         },
@@ -192,6 +208,31 @@ class YouTubeAdapter implements Adapter {
   setQuality(id: string) {
     // YouTube treats this as a hint and may override it based on bandwidth.
     this.player?.setPlaybackQuality?.(id === 'auto' ? 'default' : id);
+  }
+
+  readonly supportsCaptions = true;
+
+  setCaptions(enabled: boolean) {
+    this.captionsWanted = enabled;
+    this.applyCaptions();
+  }
+
+  /**
+   * YouTube turns captions on by itself for some videos and accounts, and the
+   * embed has no visible control for it, so the module is loaded or unloaded
+   * outright rather than merely asked nicely.
+   */
+  private applyCaptions() {
+    const player = this.player;
+    if (!player) return;
+    for (const module of ['captions', 'cc']) {
+      try {
+        if (this.captionsWanted) player.loadModule?.(module);
+        else player.unloadModule?.(module);
+      } catch {
+        /* the module may not exist for this video */
+      }
+    }
   }
 
   private publishQualities() {
@@ -310,6 +351,14 @@ class VimeoAdapter implements Adapter {
   setMuted(m: boolean) { this.player?.setMuted?.(m).catch(() => undefined); }
   setRate(r: number) { this.player?.setPlaybackRate?.(r).catch(() => undefined); }
   setQuality(id: string) { this.player?.setQuality?.(id).catch(() => undefined); }
+
+  readonly supportsCaptions = true;
+
+  setCaptions(enabled: boolean) {
+    if (!this.player) return;
+    if (enabled) this.player.enableTextTrack?.('en').catch(() => undefined);
+    else this.player.disableTextTrack?.().catch(() => undefined);
+  }
 
   destroy() {
     this.destroyed = true;
@@ -546,6 +595,7 @@ class HtmlAdapter implements Adapter {
   private video: HTMLVideoElement;
   private hls: any = null;
   private destroyed = false;
+  private captionsWanted = false;
 
   private src = '';
 
@@ -567,8 +617,10 @@ class HtmlAdapter implements Adapter {
     this.video.style.background = '#000';
     this.mount.appendChild(this.video);
 
+    this.video.textTracks.addEventListener?.('addtrack', () => this.announceCaptions());
     this.video.addEventListener('loadedmetadata', () => {
       this.ready = true;
+      this.announceCaptions();
       if (Number.isFinite(this.video.duration) && this.video.duration > 0) this.cb.onDuration(this.video.duration);
       this.cb.onReady();
     });
@@ -622,6 +674,7 @@ class HtmlAdapter implements Adapter {
               'auto'
             );
           });
+          this.hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => this.announceCaptions());
           this.hls.on(Hls.Events.ERROR, (_e: unknown, data: any) => {
             if (data?.fatal) this.cb.onError('The HLS stream stopped working');
           });
@@ -654,6 +707,24 @@ class HtmlAdapter implements Adapter {
     // Only an HLS ladder has renditions; a plain file is a single stream.
     if (!this.hls) return;
     this.hls.currentLevel = id === 'auto' ? -1 : Number(id);
+  }
+
+  readonly supportsCaptions = true;
+
+  setCaptions(enabled: boolean) {
+    this.captionsWanted = enabled;
+    if (this.hls) this.hls.subtitleTrack = enabled ? Math.max(0, this.hls.subtitleTrack) : -1;
+    const tracks = this.video.textTracks;
+    for (let i = 0; i < tracks.length; i++) {
+      tracks[i].mode = enabled && i === 0 ? 'showing' : 'disabled';
+    }
+  }
+
+  private announceCaptions() {
+    const hasHls = Boolean(this.hls?.subtitleTracks?.length);
+    this.cb.onCaptionsAvailable?.(hasHls || this.video.textTracks.length > 0);
+    // Default to off, matching every other player in the app.
+    if (!this.captionsWanted) this.setCaptions(false);
   }
 
   destroy() {

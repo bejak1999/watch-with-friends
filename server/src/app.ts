@@ -16,6 +16,10 @@ import { avatarRouter } from './routes/avatars';
 import { statsRouter } from './routes/stats';
 import { initRealtime } from './realtime';
 import { sweepExpired } from './services/rateLimit';
+import { createLogger, currentLogLevel } from './services/logger';
+
+const log = createLogger('http');
+const boot = createLogger('boot');
 
 migrate();
 
@@ -43,6 +47,33 @@ app.use((_req, res, next) => {
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
 app.use(attachUser);
+
+/**
+ * One line per API request, after the response is sent so the status and the
+ * duration are known. Slow or failing requests are raised a level so they
+ * still show up at the default LOG_LEVEL=info.
+ */
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/api') || req.path === '/api/health') return next();
+  const started = Date.now();
+  // Routers rewrite req.url as they dispatch, so the full path has to be taken
+  // now - by the time 'finish' runs, req.path is the router-relative tail.
+  const fullPath = req.path;
+  res.on('finish', () => {
+    const ms = Date.now() - started;
+    const detail = {
+      status: res.statusCode,
+      ms,
+      user: req.user?.username,
+      ip: req.ip,
+    };
+    const line = `${req.method} ${fullPath}`;
+    if (res.statusCode >= 500) log.error(line, detail);
+    else if (res.statusCode >= 400 || ms > 3000) log.warn(line, detail);
+    else log.debug(line, detail);
+  });
+  next();
+});
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, name: getSetting('site_name'), version: '1.0.0' });
@@ -89,8 +120,14 @@ if (fs.existsSync(config.clientDir)) {
 }
 
 // ---- error handler ----
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error('[error]', err);
+app.use((err: unknown, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  log.error('unhandled error', {
+    path: req.originalUrl,
+    method: req.method,
+    user: req.user?.username,
+    message: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
   if (res.headersSent) return;
   res.status(500).json({ error: 'Something went wrong on the server' });
 });
@@ -106,6 +143,14 @@ server.listen(config.port, config.host, () => {
   console.log(`\n  Watch With Friends`);
   console.log(`  listening on http://${config.host}:${config.port}`);
   console.log(`  data dir:    ${config.dataDir}`);
+  const level = currentLogLevel();
+  console.log(`  log level:   ${level}${level === 'debug' ? '' : ' (set LOG_LEVEL=debug for everything)'}`);
+  boot.info('server started', {
+    port: config.port,
+    dataDir: config.dataDir,
+    node: process.version,
+    trustProxy: config.trustProxy,
+  });
   if (bootstrap.created) {
     console.log('\n  ================ FIRST RUN ================');
     console.log(`  Admin account created`);
@@ -133,7 +178,19 @@ server.listen(config.port, config.host, () => {
   }
 });
 
+// A crash that takes the container down should leave a reason behind.
+process.on('uncaughtException', (err) => {
+  boot.error('uncaught exception', { message: err.message, stack: err.stack });
+});
+process.on('unhandledRejection', (reason) => {
+  boot.error('unhandled rejection', {
+    message: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
 function shutdown(signal: string) {
+  boot.info('shutting down', { signal });
   console.log(`\n[${signal}] shutting down`);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 5000).unref();

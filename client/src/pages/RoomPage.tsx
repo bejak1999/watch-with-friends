@@ -11,7 +11,7 @@ import { AddMediaDialog } from '../components/room/AddMediaDialog';
 import { RoomSettingsDialog } from '../components/room/RoomSettingsDialog';
 import { CopyButton, Icon, Spinner } from '../components/ui';
 import { formatTime, sourceLabel } from '../lib/format';
-import type { MediaItem } from '../lib/api';
+import type { MediaItem, Member, PlaybackState, QueueItem, RoomSnapshot } from '../lib/api';
 
 type Tab = 'queue' | 'chat' | 'people';
 
@@ -52,6 +52,11 @@ export function RoomPage() {
   const [playerFailed, setPlayerFailed] = useState(false);
   const [qualities, setQualities] = useState<QualityOption[]>([]);
   const [quality, setQuality] = useState('auto');
+  const [captionsAvailable, setCaptionsAvailable] = useState(false);
+  const [captionsOn, setCaptionsOn] = useState(() => localStorage.getItem('wwf.captions') === '1');
+  // Collapsing the side panel is remembered per device.
+  const [sideCollapsed, setSideCollapsed] = useState(() => localStorage.getItem('wwf.sideCollapsed') === '1');
+  const [debugOpen, setDebugOpen] = useState(false);
 
   const canControl = room?.permissions.canControl ?? false;
   const canQueue = room?.permissions.canQueue ?? false;
@@ -59,6 +64,8 @@ export function RoomPage() {
 
   useEffect(() => localStorage.setItem('wwf.volume', String(volume)), [volume]);
   useEffect(() => localStorage.setItem('wwf.muted', muted ? '1' : '0'), [muted]);
+  useEffect(() => localStorage.setItem('wwf.captions', captionsOn ? '1' : '0'), [captionsOn]);
+  useEffect(() => localStorage.setItem('wwf.sideCollapsed', sideCollapsed ? '1' : '0'), [sideCollapsed]);
 
   /* Track the player clock for the scrub bar. */
   useEffect(() => {
@@ -115,6 +122,15 @@ export function RoomPage() {
         case 't':
           setTheater((v) => !v);
           break;
+        case 'c':
+          if (captionsAvailable) setCaptionsOn((v) => !v);
+          break;
+        case 'd':
+          setDebugOpen((v) => !v);
+          break;
+        case 'b':
+          setSideCollapsed((v) => !v);
+          break;
         default:
           break;
       }
@@ -122,7 +138,7 @@ export function RoomPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canControl, playback, serverOffset]);
+  }, [canControl, playback, serverOffset, captionsAvailable]);
 
   const currentPosition = () => {
     const player = playerRef.current;
@@ -212,7 +228,10 @@ export function RoomPage() {
   const progress = duration > 0 ? Math.min(100, (displayPosition / duration) * 100) : 0;
 
   return (
-    <div className="room-layout" style={theater ? { gridTemplateColumns: '1fr' } : undefined}>
+    <div
+      className="room-layout"
+      style={theater || sideCollapsed ? { gridTemplateColumns: '1fr' } : undefined}
+    >
       <div className="stage-col">
         <div className={`stage${theater ? ' theater' : ''}`} ref={stageRef}>
           <SyncPlayer
@@ -229,6 +248,8 @@ export function RoomPage() {
             onError={onPlayerError}
             onReport={onReport}
             onQualities={onQualities}
+            onCaptionsAvailable={setCaptionsAvailable}
+            captionsOn={captionsOn}
             canControl={canControl}
             onExternalSeek={onExternalSeek}
             onNotice={onNotice}
@@ -379,6 +400,33 @@ export function RoomPage() {
                   ))}
                 </select>
               )}
+              {captionsAvailable && (
+                <button
+                  className="btn ghost icon"
+                  onClick={() => setCaptionsOn((v) => !v)}
+                  title={captionsOn ? 'Turn subtitles off (c)' : 'Turn subtitles on (c)'}
+                  aria-pressed={captionsOn}
+                  style={captionsOn ? { color: 'var(--accent)' } : undefined}
+                >
+                  <Icon name="captions" size={16} />
+                </button>
+              )}
+              <button
+                className="btn ghost icon hide-sm"
+                onClick={() => setSideCollapsed((v) => !v)}
+                title={sideCollapsed ? 'Show the side panel (b)' : 'Hide the side panel (b)'}
+                style={sideCollapsed ? { color: 'var(--accent)' } : undefined}
+              >
+                <Icon name="panel-right" size={16} />
+              </button>
+              <button
+                className="btn ghost icon hide-sm"
+                onClick={() => setDebugOpen((v) => !v)}
+                title="Diagnostics (d)"
+                style={debugOpen ? { color: 'var(--accent)' } : undefined}
+              >
+                <Icon name="bug" size={16} />
+              </button>
               <button
                 className="btn ghost icon hide-sm"
                 onClick={() => setTheater((v) => !v)}
@@ -419,7 +467,7 @@ export function RoomPage() {
         </div>
       </div>
 
-      {!theater && (
+      {!theater && !sideCollapsed && (
         <aside className="side">
           <div className="tabs" role="tablist">
             <button className="tab" role="tab" aria-selected={tab === 'queue'} onClick={() => setTab('queue')}>
@@ -460,6 +508,20 @@ export function RoomPage() {
             />
           )}
         </aside>
+      )}
+
+      {debugOpen && (
+        <DebugPanel
+          onClose={() => setDebugOpen(false)}
+          room={room}
+          playback={playback}
+          serverOffset={serverOffset}
+          connected={connected}
+          members={members}
+          currentItem={currentItem}
+          waitingForBuffer={waitingForBuffer}
+          player={playerRef}
+        />
       )}
 
       {adding && <AddMediaDialog roomId={room.id} onClose={() => setAdding(false)} onAdd={onAdd} />}
@@ -535,6 +597,94 @@ function Scrubber({
         <div className="fill" style={{ width: `${progress}%` }} />
       </div>
       <div className="knob" style={{ left: `${progress}%` }} />
+    </div>
+  );
+}
+
+
+/* ---------------------------------------------------------------- */
+/* Diagnostics                                                       */
+/* ---------------------------------------------------------------- */
+
+/**
+ * Everything needed to explain "it went out of sync" without guessing:
+ * the room's view, this player's view, and the gap between them.
+ */
+function DebugPanel({
+  onClose,
+  room,
+  playback,
+  serverOffset,
+  connected,
+  members,
+  currentItem,
+  waitingForBuffer,
+  player,
+}: {
+  onClose: () => void;
+  room: RoomSnapshot;
+  playback: PlaybackState;
+  serverOffset: number;
+  connected: boolean;
+  members: Member[];
+  currentItem: QueueItem | null;
+  waitingForBuffer: boolean;
+  player: React.RefObject<SyncPlayerHandle | null>;
+}) {
+  const [, forceRender] = useState(0);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => forceRender((n) => n + 1), 500);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const local = player.current?.getTime() ?? 0;
+  const expected = expectedPosition(playback, serverOffset);
+  const drift = player.current?.getDrift() ?? 0;
+  const buffering = members.filter((m) => m.buffering).map((m) => m.displayName);
+
+  const rows: Array<[string, string]> = [
+    ['Connection', connected ? 'connected' : 'DISCONNECTED'],
+    ['Clock offset', `${serverOffset >= 0 ? '+' : ''}${Math.round(serverOffset)} ms`],
+    ['Room says', `${playback.isPlaying ? 'playing' : 'paused'} @ ${expected.toFixed(2)}s (rate ${playback.rate}x)`],
+    ['This player', `${player.current?.isReady() ? 'ready' : 'loading'} @ ${local.toFixed(2)}s`],
+    ['Drift', `${drift >= 0 ? '+' : ''}${drift.toFixed(2)}s ${Math.abs(drift) > 2 ? '(correcting)' : '(in sync)'}`],
+    ['Waiting for buffer', waitingForBuffer ? `yes${buffering.length ? `: ${buffering.join(', ')}` : ''}` : 'no'],
+    ['Buffering now', buffering.length ? buffering.join(', ') : 'nobody'],
+    ['Source', currentItem ? `${currentItem.source} · ${currentItem.sourceId.slice(0, 40)}` : 'nothing queued'],
+    ['Room', `${room.id} · ${room.myRole ?? 'guest'} · control=${room.permissions.canControl}`],
+    ['Online', `${members.filter((m) => m.online).length} of ${members.length}`],
+    ['State stamp', new Date(playback.stateAt).toISOString().slice(11, 23)],
+  ];
+
+  const copy = () => {
+    const text = rows.map(([k, v]) => `${k}: ${v}`).join('\n');
+    navigator.clipboard?.writeText(`Watch With Friends diagnostics\n${text}`).catch(() => undefined);
+  };
+
+  return (
+    <div className="debug-panel">
+      <div className="row between" style={{ marginBottom: 6 }}>
+        <strong className="small">Diagnostics</strong>
+        <div className="row" style={{ gap: 4 }}>
+          <button className="btn ghost sm" onClick={copy} title="Copy for a bug report">
+            Copy
+          </button>
+          <button className="btn ghost icon sm" onClick={onClose} aria-label="Close diagnostics">
+            <Icon name="close" size={13} />
+          </button>
+        </div>
+      </div>
+      <table className="debug-table">
+        <tbody>
+          {rows.map(([k, v]) => (
+            <tr key={k}>
+              <td>{k}</td>
+              <td className="mono">{v}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

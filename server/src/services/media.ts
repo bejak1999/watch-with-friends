@@ -3,7 +3,10 @@ import { getSetting } from '../db';
 import { isSafeToFetch } from './ssrf';
 import { matchProvider } from './providers';
 import { MediaError } from './providers/types';
+import { createLogger } from './logger';
 import type { MediaItem } from '../types';
+
+const log = createLogger('media');
 
 export function youtubeApiKey(): string {
   return getSetting('youtube_api_key') || config.youtubeApiKeyEnv;
@@ -417,11 +420,31 @@ export interface ResolveResult {
 }
 
 export async function resolveMediaUrl(raw: string, mode: 'auto' | 'playlist' | 'single' = 'auto'): Promise<ResolveResult> {
+  const started = Date.now();
   // Registered sites first; the generic file handling below is the fallback.
   const hit = matchProvider(raw);
-  if (hit) return { items: [await hit.provider.resolve(hit.id, raw)] };
+  if (hit) {
+    log.debug('resolving via provider', { provider: hit.provider.id, id: hit.id });
+    try {
+      const item = await hit.provider.resolve(hit.id, raw);
+      log.info('resolved', { provider: hit.provider.id, title: item.title, ms: Date.now() - started });
+      return { items: [item] };
+    } catch (err) {
+      // Which site, which id, and what it actually said - a bare "could not
+      // load" in the UI is exactly the guessing game we are trying to avoid.
+      log.warn('provider failed', {
+        provider: hit.provider.id,
+        id: hit.id,
+        url: raw,
+        message: err instanceof Error ? err.message : String(err),
+        ms: Date.now() - started,
+      });
+      throw err;
+    }
+  }
 
   const parsed = parseMediaUrl(raw);
+  log.debug('resolving', { kind: parsed.kind, id: parsed.id, mode });
 
   switch (parsed.kind) {
     case 'youtube_video': {

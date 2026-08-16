@@ -379,6 +379,7 @@ microphone and geolocation.
 | `ADMIN_PASSWORD` | generated + logged | Bootstrap admin password |
 | `YOUTUBE_API_KEY` | — | Overridden by a key saved in the admin panel |
 | `CLIENT_DIR` | `../client/dist` | Where the built UI lives |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 
 ---
 
@@ -391,8 +392,52 @@ microphone and geolocation.
 | `Shift` + `←` `→` | ⏩ Skip 30 seconds |
 | `N` | ⏭️ Next in queue |
 | `M` | 🔇 Mute |
+| `C` | 💬 Subtitles on or off |
+| `B` | ↔️ Hide or show the side panel |
+| `D` | 🐞 Diagnostics overlay |
 | `F` | 🖥️ Fullscreen |
 | `T` | 🎦 Theater mode |
+
+---
+
+## 🐞 When something goes wrong
+
+No guessing games. There are three places to look, in order:
+
+**1. The diagnostics overlay** — press `D` in a room, or click the 🐞 button in the
+control bar. It shows, live:
+
+| | |
+|---|---|
+| Connection | connected or dropped |
+| Clock offset | how far your clock is from the server's |
+| Room says | what the server thinks is playing, and where |
+| This player | what your player is actually doing |
+| Drift | the gap between the two, and whether it is being corrected |
+| Waiting for buffer | who the room is waiting on |
+| Source, Room, Online | which provider, which room, how many people |
+
+**Copy** puts the whole table on your clipboard — paste it straight into a bug report.
+
+**2. The server log** — Admin → **Logs**. The last 500 events, live-updating, filterable
+by level and by area (`http`, `auth`, `sync`, `media`, `admin`, `boot`). **Download** saves
+it as a text file with the Node version, uptime and memory alongside. Passwords, tokens
+and cookies are redacted before anything is recorded.
+
+**3. Turn the detail up** — set `LOG_LEVEL=debug` and restart. Every API request, every
+media resolution and every buffering change gets printed to the container log too. The
+in-app viewer always keeps debug lines regardless of this setting, so you usually do not
+need it.
+
+Common things the log will tell you outright:
+
+| Symptom | Look for |
+|---|---|
+| Playback keeps pausing | `sync` → `waiting for buffer` — it names who |
+| A link will not add | `media` → `provider failed` — with the site's own error |
+| Someone cannot sign in | `auth` → `login failed` or `login blocked by back-off` |
+| The room froze | `sync` → `gave up on stuck viewers` after 25s |
+| Random disconnects | `sync` → `disconnected` with the reason |
 
 ---
 

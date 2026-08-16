@@ -5,6 +5,8 @@ import { createAdapter, type Adapter, type QualityOption } from './adapters';
 export interface SyncPlayerHandle {
   /** Change the local rendition. Never synced - each viewer has their own line. */
   setQuality(id: string): void;
+  /** Show or hide subtitles, for this viewer only. */
+  setCaptions(enabled: boolean): void;
   /** Local player position in seconds, used by the scrub bar. */
   getTime(): number;
   getDuration(): number;
@@ -35,6 +37,9 @@ interface Props {
   onNotice: (message: string) => void;
   /** Reports the resolutions this source can offer, once they are known. */
   onQualities: (options: QualityOption[], activeId: string) => void;
+  /** Whether this source has subtitles at all, so the button can hide. */
+  onCaptionsAvailable: (available: boolean) => void;
+  captionsOn: boolean;
 }
 
 /** Beyond this the player is jumped rather than nudged. */
@@ -64,6 +69,8 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     canControl,
     onExternalSeek,
     onNotice,
+    onCaptionsAvailable,
+    captionsOn,
   },
   ref
 ) {
@@ -73,8 +80,8 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   const [loadError, setLoadError] = useState<string | null>(null);
 
   // Latest props read inside intervals without re-creating the player.
-  const live = useRef({ playback, serverOffset, armed, volume, muted, item, canControl });
-  live.current = { playback, serverOffset, armed, volume, muted, item, canControl };
+  const live = useRef({ playback, serverOffset, armed, volume, muted, item, canControl, captionsOn });
+  live.current = { playback, serverOffset, armed, volume, muted, item, canControl, captionsOn };
 
   const driftRef = useRef(0);
   const bufferingSince = useRef(0);
@@ -92,6 +99,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     setReady(false);
     setLoadError(null);
     onQualities([], 'auto');
+    onCaptionsAvailable(false);
     driftRef.current = 0;
     lastSample.current = null;
     stalledSince.current = 0;
@@ -112,6 +120,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
         const { playback: pb, serverOffset: off, armed: isArmed, volume: vol, muted: isMuted } = live.current;
         adapter.setVolume(vol);
         adapter.setMuted(isMuted);
+        adapter.setCaptions?.(live.current.captionsOn);
         adapter.setRate(pb.rate || 1);
         appliedRate.current = pb.rate || 1;
         const target = expectedPosition(pb, off);
@@ -138,6 +147,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
         onError(message);
       },
       onQualities: (options, activeId) => onQualities(options, activeId),
+      onCaptionsAvailable: (available) => onCaptionsAvailable(available),
     });
 
     adapterRef.current = adapter;
@@ -156,6 +166,10 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   useEffect(() => {
     adapterRef.current?.setMuted(muted);
   }, [muted, ready]);
+
+  useEffect(() => {
+    adapterRef.current?.setCaptions?.(captionsOn);
+  }, [captionsOn, ready]);
 
   /* ---- react to explicit play/pause/seek from the room ---- */
   useEffect(() => {
@@ -255,11 +269,22 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
           }
         } else if (stalledSince.current !== 0) {
           stalledSince.current = 0;
-          if (reportedBuffering.current && bufferingSince.current === 0) {
-            reportedBuffering.current = false;
-            onBuffering(false);
-          }
         }
+      }
+
+      /**
+       * Clearing has to live outside the block above. Reporting a stall makes
+       * the server pause the room, which flips isPlaying to false - so a clear
+       * path gated on isPlaying can never run, and the room stays "waiting for
+       * everyone" forever. Ask the player directly instead.
+       */
+      // A paused room has nothing to wait for, so any stall measurement is void.
+      if (!pb.isPlaying) stalledSince.current = 0;
+
+      const stillStuck = bufferingSince.current !== 0 || (pb.isPlaying && stalledSince.current !== 0);
+      if (reportedBuffering.current && !stillStuck) {
+        reportedBuffering.current = false;
+        onBuffering(false);
       }
 
       if (!pb.isPlaying) return;
@@ -293,6 +318,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     ref,
     () => ({
       setQuality: (id: string) => adapterRef.current?.setQuality?.(id),
+      setCaptions: (enabled: boolean) => adapterRef.current?.setCaptions?.(enabled),
       getTime: () => adapterRef.current?.getTime() ?? 0,
       getDuration: () => adapterRef.current?.getDuration() ?? 0,
       getDrift: () => driftRef.current,

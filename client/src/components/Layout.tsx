@@ -6,6 +6,13 @@ import { Avatar, Brand, Icon } from './ui';
 export function Layout() {
   const { user, siteName, logout } = useApp();
   const [navOpen, setNavOpen] = useState(false);
+  // Collapsing the nav is a per-device preference, so it lives in localStorage.
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem('wwf.navCollapsed') === '1');
+  const inRoom = window.location.pathname.startsWith('/rooms/');
+
+  useEffect(() => {
+    localStorage.setItem('wwf.navCollapsed', collapsed ? '1' : '0');
+  }, [collapsed]);
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -63,7 +70,7 @@ export function Layout() {
   );
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${collapsed ? ' nav-collapsed' : ''}`}>
       {nav}
       {navOpen && <div className="nav-scrim" onClick={() => setNavOpen(false)} />}
       <div className="main">
@@ -73,6 +80,16 @@ export function Layout() {
           </button>
           <Brand name={siteName} />
         </div>
+        {/* Desktop: fold the nav away so the video gets the width. */}
+        <button
+          className="nav-collapse-toggle"
+          onClick={() => setCollapsed((v) => !v)}
+          title={collapsed ? "Show the menu" : "Hide the menu"}
+          aria-label={collapsed ? "Show the menu" : "Hide the menu"}
+          data-in-room={inRoom}
+        >
+          <Icon name="panel-left" size={15} />
+        </button>
         <Outlet />
       </div>
     </div>

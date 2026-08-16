@@ -25,7 +25,10 @@ import {
 } from './services/rooms';
 import { z } from 'zod';
 import { creditWatchTime, logPlay } from './services/stats';
+import { createLogger } from './services/logger';
 import type { MediaItem, PublicUser, RoomRole } from './types';
+
+const log = createLogger('sync');
 
 /**
  * Socket payloads arrive straight from a browser, so they get the same
@@ -90,6 +93,8 @@ interface SocketState {
 const socketState = new WeakMap<Socket, SocketState>();
 /** roomId -> whether the server auto-paused while waiting for a buffering viewer. */
 const autoPaused = new Map<string, boolean>();
+/** roomId -> when the wait began, so one stuck viewer cannot hold it forever. */
+const waitingSince = new Map<string, number>();
 /** roomId -> timestamp of the last track change, used to swallow duplicate "ended". */
 const lastAdvance = new Map<string, number>();
 /** roomId -> pending "everyone left" freeze, cancelled if anybody comes back. */
@@ -104,6 +109,12 @@ const emptyRoomTimers = new Map<string, NodeJS.Timeout>();
 const EMPTY_ROOM_GRACE_MS = 45_000;
 /** Heartbeat period, and therefore the granularity of watch-time accrual. */
 const TICK_SECONDS = 5;
+/**
+ * Longest the room will hold for a buffering viewer. Past this their player
+ * is presumed broken rather than slow, and everyone else stops being punished
+ * for it.
+ */
+const MAX_WAIT_MS = 25_000;
 
 function cancelEmptyRoomFreeze(roomId: string): void {
   const timer = emptyRoomTimers.get(roomId);
@@ -133,6 +144,7 @@ function scheduleEmptyRoomFreeze(roomId: string): void {
 export function forgetRoom(roomId: string): void {
   cancelEmptyRoomFreeze(roomId);
   autoPaused.delete(roomId);
+  waitingSince.delete(roomId);
   lastAdvance.delete(roomId);
 }
 
@@ -364,24 +376,72 @@ function advance(roomId: string, direction: 1 | -1 = 1) {
 /** Pause/resume automatically while someone is still buffering. */
 function reconcileBuffering(roomId: string) {
   const room = roomById(roomId);
-  if (!room || room.wait_for_buffer !== 1) return;
+  if (!room) return;
 
-  const anyBuffering = socketsIn(roomId).some((s) => socketState.get(s)?.buffering);
   const wasAutoPaused = autoPaused.get(roomId) === true;
+
+  // The setting can be turned off mid-wait; do not strand the room paused.
+  if (room.wait_for_buffer !== 1) {
+    if (wasAutoPaused) resumeAfterWait(roomId);
+    return;
+  }
+
+  const buffering = socketsIn(roomId).filter((s) => socketState.get(s)?.buffering);
+  const anyBuffering = buffering.length > 0;
 
   if (anyBuffering && room.is_playing === 1) {
     writePlayback(roomId, { isPlaying: false });
     autoPaused.set(roomId, true);
+    waitingSince.set(roomId, Date.now());
     emitPlayback(roomId);
     io?.to(`room:${roomId}`).emit('sync:waiting', { waiting: true });
+    log.info('waiting for buffer', {
+      room: roomId,
+      on: buffering.map((s) => socketState.get(s)?.user.username),
+    });
     return;
   }
-  if (!anyBuffering && wasAutoPaused) {
-    autoPaused.set(roomId, false);
-    writePlayback(roomId, { isPlaying: true });
-    emitPlayback(roomId);
-    io?.to(`room:${roomId}`).emit('sync:waiting', { waiting: false });
+
+  if (!anyBuffering && wasAutoPaused) resumeAfterWait(roomId);
+}
+
+function resumeAfterWait(roomId: string) {
+  const waited = waitingSince.get(roomId);
+  autoPaused.set(roomId, false);
+  waitingSince.delete(roomId);
+  writePlayback(roomId, { isPlaying: true });
+  emitPlayback(roomId);
+  io?.to(`room:${roomId}`).emit('sync:waiting', { waiting: false });
+  log.info('everyone caught up', { room: roomId, waitedMs: waited ? Date.now() - waited : 0 });
+}
+
+/**
+ * Safety net for a viewer whose player never recovers - a crashed tab, a dead
+ * stream, a bug in our own stall detection. Without this the room could sit
+ * paused indefinitely with no way out but a manual play.
+ */
+function giveUpOnStuckViewers(roomId: string) {
+  if (autoPaused.get(roomId) !== true) return;
+  const since = waitingSince.get(roomId);
+  if (!since || Date.now() - since < MAX_WAIT_MS) return;
+
+  const stuck: string[] = [];
+  for (const s of socketsIn(roomId)) {
+    const st = socketState.get(s);
+    if (st?.buffering) {
+      st.buffering = false;
+      stuck.push(st.user.displayName);
+    }
   }
+  if (stuck.length > 0) {
+    systemMessageTo(
+      roomId,
+      `Carried on without ${stuck.join(', ')} - still buffering after ${Math.round(MAX_WAIT_MS / 1000)}s`
+    );
+    log.warn('gave up on stuck viewers', { room: roomId, stuck, afterMs: Date.now() - since });
+  }
+  resumeAfterWait(roomId);
+  emitMembers(roomId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -410,8 +470,20 @@ export function initRealtime(httpServer: HttpServer): Server {
     path: '/socket.io',
     // Cloudflare tunnels handle websockets fine, but polling is a safe fallback.
     transports: ['websocket', 'polling'],
-    pingTimeout: 25000,
+    /**
+     * Switching a 4K stream can block the browser's main thread long enough to
+     * miss a heartbeat, and the old 25s timeout dropped the socket for it - the
+     * user saw "reconnecting" and lost the controls for ~20s. Be patient
+     * instead; a genuinely dead client is still gone well inside the 45s
+     * empty-room grace.
+     */
+    pingInterval: 20000,
+    pingTimeout: 40000,
     maxHttpBufferSize: 1e6,
+  });
+
+  io.engine.on('connection_error', (err: { code: number; message: string; context?: unknown }) => {
+    log.warn('socket refused', { code: err.code, message: err.message });
   });
 
   io.use((socket, next) => {
@@ -504,6 +576,7 @@ export function initRealtime(httpServer: HttpServer): Server {
       });
       emitMembers(roomId);
       if (!wasOnlineElsewhere) systemMessageTo(roomId, `${state.user.displayName} joined`);
+      log.info('joined room', { room: roomId, user: state.user.username, role, online: onlineUserIds(roomId).size });
     });
 
     socket.on('room:leave', () => {
@@ -734,6 +807,7 @@ export function initRealtime(httpServer: HttpServer): Server {
       const next = Boolean(payload?.buffering);
       if (next === state.buffering) return;
       state.buffering = next;
+      log.debug('buffering changed', { room: room.id, user: state.user.username, buffering: next });
       emitMembers(room.id);
       reconcileBuffering(room.id);
     });
@@ -745,10 +819,13 @@ export function initRealtime(httpServer: HttpServer): Server {
       state.reportedAt = Date.now();
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason: string) => {
       const roomId = state.roomId;
       state.roomId = null;
       if (!roomId) return;
+      // The reason is what tells "closed the tab" apart from "the tunnel timed
+      // out mid-stream", which is the interesting case for sync complaints.
+      log.info('disconnected', { room: roomId, user: state.user.username, reason });
       emitMembers(roomId);
       reconcileBuffering(roomId);
       if (!onlineUserIds(roomId).has(state.user.id)) {
@@ -769,6 +846,8 @@ export function initRealtime(httpServer: HttpServer): Server {
       const roomId = key.slice(5);
       const payload = playbackPayload(roomId);
       if (payload) io.to(key).emit('player:tick', payload);
+
+      giveUpOnStuckViewers(roomId);
 
       const room = roomById(roomId);
       if (!room || room.is_playing !== 1) continue;

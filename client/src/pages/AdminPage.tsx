@@ -5,7 +5,7 @@ import { Avatar, CopyButton, Field, Icon, Meter, Modal, Spinner, Toggle } from '
 import { AvatarPicker } from '../components/AvatarPicker';
 import { formatBytes, relativeTime } from '../lib/format';
 
-type Tab = 'overview' | 'codes' | 'users' | 'settings' | 'backup';
+type Tab = 'overview' | 'codes' | 'users' | 'settings' | 'backup' | 'logs';
 
 interface InviteCode {
   code: string;
@@ -43,6 +43,7 @@ const TAB_LABELS: Record<Tab, string> = {
   users: 'Users',
   settings: 'Settings',
   backup: 'Backup',
+  logs: 'Logs',
 };
 
 export function AdminPage() {
@@ -57,8 +58,8 @@ export function AdminPage() {
         </div>
       </div>
 
-      <div className="tabs" style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', maxWidth: 640 }}>
-        {(['overview', 'codes', 'users', 'settings', 'backup'] as Tab[]).map((t) => (
+      <div className="tabs" style={{ border: '1px solid var(--border)', borderRadius: 'var(--radius)', maxWidth: 760 }}>
+        {(['overview', 'codes', 'users', 'settings', 'backup', 'logs'] as Tab[]).map((t) => (
           <button key={t} className="tab" aria-selected={tab === t} onClick={() => setTab(t)}>
             {TAB_LABELS[t]}
           </button>
@@ -70,6 +71,7 @@ export function AdminPage() {
       {tab === 'users' && <UsersTab />}
       {tab === 'settings' && <SettingsTab />}
       {tab === 'backup' && <BackupTab />}
+      {tab === 'logs' && <LogsTab />}
     </div>
   );
 }
@@ -1109,5 +1111,124 @@ function BackupTab() {
         </div>
       </section>
     </>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Logs                                                              */
+/* ---------------------------------------------------------------- */
+
+interface LogEntry {
+  at: number;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  scope: string;
+  message: string;
+  detail?: Record<string, unknown>;
+}
+
+const LEVEL_COLOR: Record<LogEntry['level'], string> = {
+  debug: 'var(--text-faint)',
+  info: 'var(--text-dim)',
+  warn: '#e0a33e',
+  error: '#e05a5a',
+};
+
+function LogsTab() {
+  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [level, setLevel] = useState<LogEntry['level']>('debug');
+  const [scope, setScope] = useState('');
+  const [serverLevel, setServerLevel] = useState('');
+  const [live, setLive] = useState(true);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await api.get<{ entries: LogEntry[]; level: string }>(
+        `/admin/logs?level=${level}&limit=400${scope ? `&scope=${encodeURIComponent(scope)}` : ''}`
+      );
+      setEntries(res.entries);
+      setServerLevel(res.level);
+    } finally {
+      setLoading(false);
+    }
+  }, [level, scope]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (!live) return;
+    const timer = window.setInterval(() => void load(), 3000);
+    return () => window.clearInterval(timer);
+  }, [live, load]);
+
+  // Every scope seen so far, so the filter does not need a hardcoded list.
+  const scopes = Array.from(new Set(entries.map((e) => e.scope))).sort();
+
+  return (
+    <section className="card">
+      <div className="row between wrap" style={{ gap: 8 }}>
+        <div>
+          <h2>Server log</h2>
+          <div className="sub">
+            The last 500 events, held in memory. Restarting the container clears them. Console level is{' '}
+            <strong>{serverLevel || '…'}</strong> — set <code>LOG_LEVEL=debug</code> to also print debug lines to the
+            container log.
+          </div>
+        </div>
+        <a className="btn" href="/api/admin/logs/download">
+          <Icon name="save" size={15} /> Download
+        </a>
+      </div>
+
+      <div className="row wrap" style={{ gap: 8, margin: '12px 0' }}>
+        <select className="input" style={{ width: 130 }} value={level} onChange={(e) => setLevel(e.target.value as LogEntry['level'])}>
+          <option value="debug">All levels</option>
+          <option value="info">Info and up</option>
+          <option value="warn">Warnings and up</option>
+          <option value="error">Errors only</option>
+        </select>
+        <select className="input" style={{ width: 150 }} value={scope} onChange={(e) => setScope(e.target.value)}>
+          <option value="">All areas</option>
+          {scopes.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+        <Toggle checked={live} onChange={setLive} label="Live" />
+        <button className="btn ghost" onClick={() => void load()}>
+          Refresh
+        </button>
+      </div>
+
+      {loading ? (
+        <Spinner />
+      ) : entries.length === 0 ? (
+        <div className="empty small">Nothing logged at this level yet.</div>
+      ) : (
+        <div className="log-view">
+          {entries
+            .slice()
+            .reverse()
+            .map((e, i) => (
+              <div key={`${e.at}-${i}`} className="log-line">
+                <span className="log-time">{new Date(e.at).toLocaleTimeString()}</span>
+                <span className="log-level" style={{ color: LEVEL_COLOR[e.level] }}>
+                  {e.level}
+                </span>
+                <span className="log-scope">{e.scope}</span>
+                <span className="log-msg">
+                  {e.message}
+                  {e.detail && Object.keys(e.detail).length > 0 && (
+                    <span className="log-detail"> {JSON.stringify(e.detail)}</span>
+                  )}
+                </span>
+              </div>
+            ))}
+        </div>
+      )}
+    </section>
   );
 }

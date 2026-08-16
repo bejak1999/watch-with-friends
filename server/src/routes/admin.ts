@@ -11,6 +11,7 @@ import { activeLockouts, clearLockout } from '../services/rateLimit';
 import { forgetRoom, kickUser } from '../realtime';
 import { deleteAvatarFiles } from './avatars';
 import { globalStats } from '../services/stats';
+import { createLogger, currentLogLevel, logsAsText, recentLogs, type LogLevel } from '../services/logger';
 import multer from 'multer';
 import {
   BackupError,
@@ -19,6 +20,8 @@ import {
   pendingRestore,
   stageRestore,
 } from '../services/backup';
+
+const log = createLogger('admin');
 
 export const adminRouter = Router();
 adminRouter.use(requireAdmin);
@@ -298,6 +301,41 @@ adminRouter.delete('/lockouts/:key', (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Logs                                                                */
+/* ------------------------------------------------------------------ */
+
+adminRouter.get('/logs', (req, res) => {
+  const level = String(req.query.level || 'debug');
+  const scope = req.query.scope ? String(req.query.scope) : undefined;
+  const entries = recentLogs({
+    level: (['debug', 'info', 'warn', 'error'].includes(level) ? level : 'debug') as LogLevel,
+    scope,
+    limit: Number(req.query.limit) || 200,
+  });
+  res.json({ entries, level: currentLogLevel() });
+});
+
+/** A plain-text dump, so a bug report can be a file attachment. */
+adminRouter.get('/logs/download', (_req, res) => {
+  const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-');
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="wwf-log-${stamp}.txt"`);
+  res.send(
+    [
+      `Watch With Friends diagnostics`,
+      `taken:      ${new Date().toISOString()}`,
+      `node:       ${process.version}`,
+      `uptime:     ${Math.round(process.uptime())}s`,
+      `log level:  ${currentLogLevel()}`,
+      `memory rss: ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB`,
+      '',
+      logsAsText(),
+      '',
+    ].join('\n')
+  );
+});
+
+/* ------------------------------------------------------------------ */
 /* Backup and restore                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -329,7 +367,7 @@ adminRouter.post('/backup', async (req, res) => {
       if (err && !res.headersSent) res.status(500).json({ error: 'Backup failed while sending' });
     });
   } catch (err) {
-    console.error('[backup]', err);
+    log.error('backup failed', { message: err instanceof Error ? err.message : String(err) });
     res.status(500).json({ error: err instanceof Error ? err.message : 'Backup failed' });
   }
 });

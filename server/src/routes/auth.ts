@@ -21,8 +21,11 @@ import {
   userKey,
   type LimitStatus,
 } from '../services/rateLimit';
+import { createLogger } from '../services/logger';
 import type { UserRow } from '../types';
 import type { Response } from 'express';
+
+const log = createLogger('auth');
 
 export const authRouter = Router();
 
@@ -155,6 +158,11 @@ authRouter.post('/login', (req, res) => {
   const keys = [userKey(parsed.data.username), ipKey(req, 'login')];
   const limit = checkLimit(keys);
   if (limit.blocked) {
+    log.warn('login blocked by back-off', {
+      username: parsed.data.username,
+      ip: req.ip,
+      retryInSeconds: Math.ceil(limit.retryAfterMs / 1000),
+    });
     tooManyAttempts(res, limit);
     return;
   }
@@ -162,6 +170,12 @@ authRouter.post('/login', (req, res) => {
   const row = db.prepare('SELECT * FROM users WHERE username = ?').get(parsed.data.username) as UserRow | undefined;
   if (!row || !verifyPassword(parsed.data.password, row.password_hash)) {
     const next = recordFailure(keys);
+    log.warn('login failed', {
+      username: parsed.data.username,
+      ip: req.ip,
+      reason: row ? 'wrong password' : 'no such account',
+      failures: next.failures,
+    });
     if (next.blocked) {
       tooManyAttempts(res, next);
       return;
@@ -170,6 +184,7 @@ authRouter.post('/login', (req, res) => {
     return;
   }
   if (row.is_disabled === 1) {
+    log.warn('login refused, account disabled', { username: row.username, ip: req.ip });
     res.status(403).json({ error: 'This account has been disabled' });
     return;
   }
@@ -177,6 +192,7 @@ authRouter.post('/login', (req, res) => {
   clearFailures(keys);
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(Date.now(), row.id);
   issueSession(res, row.id, req);
+  log.info('login ok', { username: row.username, ip: req.ip });
   res.json({ user: toPublicUser(row) });
 });
 
