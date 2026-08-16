@@ -196,21 +196,37 @@ export function Modal({
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
+  /**
+   * Callers write onClose={() => setOpen(false)}, a fresh function on every
+   * render. Depending on it re-ran the effect below - stealing focus back to
+   * the first button - every time the parent re-rendered. In a room that is
+   * four times a second while something plays, which made the link box
+   * impossible to type into. Read it through a ref so the effect runs once.
+   */
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener('keydown', onKey);
     const previouslyFocused = document.activeElement as HTMLElement | null;
-    ref.current?.querySelector<HTMLElement>('input, textarea, button, select')?.focus();
+    // Prefer the field the dialog actually wants filled in over whatever
+    // happens to come first in the DOM, which is usually a tab strip.
+    const target =
+      ref.current?.querySelector<HTMLElement>('[autofocus]') ??
+      ref.current?.querySelector<HTMLElement>('input, textarea, select') ??
+      ref.current?.querySelector<HTMLElement>('button');
+    target?.focus();
     return () => {
       document.removeEventListener('keydown', onKey);
       previouslyFocused?.focus?.();
     };
-  }, [onClose]);
+  }, []);
 
   return createPortal(
     <div className="modal-scrim" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
