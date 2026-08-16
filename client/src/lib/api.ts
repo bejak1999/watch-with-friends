@@ -184,9 +184,24 @@ export interface ChatMessage {
   avatarUrl: string | null;
 }
 
+/** Where the group got to in a playlist. Shared, not per person. */
+export interface PlaylistProgress {
+  playlistId: string;
+  source: string;
+  sourceId: string;
+  title: string;
+  position: number;
+  /** 1-based position in the playlist; 0 when the item is no longer in it. */
+  itemIndex: number;
+  itemCount: number;
+  updatedAt: number;
+  updatedBy: string | null;
+}
+
 export interface PlaylistSummary {
   id: string;
   name: string;
+  progress: PlaylistProgress | null;
   description: string | null;
   isShared: boolean;
   ownerId: string | null;

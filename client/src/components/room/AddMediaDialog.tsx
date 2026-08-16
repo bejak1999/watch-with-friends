@@ -578,15 +578,33 @@ function LibraryTab({ roomId, onDone }: { roomId: string; onDone: () => void }) 
       .catch(() => setPlaylists([]));
   }, []);
 
-  const load = async (id: string) => {
+  const load = async (id: string, resume: boolean) => {
     setBusyId(id);
     try {
-      const res = await api.post<{ added: number }>(`/playlists/${id}/load-into/${roomId}`);
-      toast(`Added ${res.added} videos to the queue`, 'success');
+      const res = await api.post<{ added: number; resumed: { title: string; position: number } | null }>(
+        `/playlists/${id}/load-into/${roomId}`,
+        { resume }
+      );
+      toast(
+        res.resumed
+          ? `Picked up at ${formatTime(res.resumed.position)} of "${res.resumed.title}"`
+          : `Added ${res.added} videos to the queue`,
+        'success'
+      );
       onDone();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not load that playlist', 'error');
       setBusyId(null);
+    }
+  };
+
+  const forget = async (id: string) => {
+    try {
+      await api.del(`/playlists/${id}/progress`);
+      setPlaylists((prev) => prev?.map((p) => (p.id === id ? { ...p, progress: null } : p)) ?? prev);
+      toast('Starting from the beginning next time', 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not reset that playlist', 'error');
     }
   };
 
@@ -613,10 +631,41 @@ function LibraryTab({ roomId, onDone }: { roomId: string; onDone: () => void }) 
             <div className="tiny faint">
               {p.itemCount} videos{!p.mine && p.ownerName ? ` · from ${p.ownerName}` : ''}
             </div>
+            {p.progress && (
+              <div className="tiny truncate" style={{ color: 'var(--accent)' }}>
+                ▶ {p.progress.itemIndex > 0 ? `${p.progress.itemIndex}/${p.progress.itemCount} · ` : ''}
+                {p.progress.title} at {formatTime(p.progress.position)}
+              </div>
+            )}
           </div>
-          <button className="btn sm primary" onClick={() => load(p.id)} disabled={busyId === p.id}>
-            {busyId === p.id ? <span className="spinner" /> : 'Load'}
-          </button>
+          <div className="row" style={{ gap: 4, flex: 'none' }}>
+            {p.progress ? (
+              <>
+                <button className="btn sm primary" onClick={() => load(p.id, true)} disabled={busyId === p.id}>
+                  {busyId === p.id ? <span className="spinner" /> : 'Continue'}
+                </button>
+                <button
+                  className="btn sm"
+                  onClick={() => load(p.id, false)}
+                  disabled={busyId === p.id}
+                  title="Load it and start from the first video"
+                >
+                  Start over
+                </button>
+                <button
+                  className="btn ghost icon sm"
+                  onClick={() => forget(p.id)}
+                  title="Forget where we got to, without loading it"
+                >
+                  <Icon name="refresh" size={13} />
+                </button>
+              </>
+            ) : (
+              <button className="btn sm primary" onClick={() => load(p.id, false)} disabled={busyId === p.id}>
+                {busyId === p.id ? <span className="spinner" /> : 'Load'}
+              </button>
+            )}
+          </div>
         </div>
       ))}
     </div>

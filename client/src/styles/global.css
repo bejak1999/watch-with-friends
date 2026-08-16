@@ -1444,3 +1444,36 @@ img.avatar { object-fit: cover; }
   .fs-bar { padding: 22px 10px 10px; }
   .fs-bar .volume { display: none; }
 }
+
+/* Compact selects, used by the fullscreen bar. */
+.select.sm {
+  width: auto;
+  height: 30px;
+  padding: 0 26px 0 9px;
+  font-size: 0.8rem;
+  border-radius: var(--radius-sm);
+  background-position: calc(100% - 13px) center, calc(100% - 8px) center;
+}
+.fs-bar .select.sm {
+  background-color: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: #f2f3f8;
+}
+.fs-bar .select.sm option { color: var(--text); background: var(--bg-elevated); }
+
+/* Playlist progress along the bottom of a cover. */
+.card-progress {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.2);
+}
+.card-progress > div { height: 100%; background: var(--accent); }
+
+/* A phone in fullscreen is still narrow: wrap rather than clip, and drop the
+   parts that are nice-to-have before the parts that are controls. */
+.fs-bar .row { flex-wrap: wrap; row-gap: 6px; }
+.fs-bar .fs-time { white-space: nowrap; }
+@media (max-width: 760px) {
+  .fs-bar .fs-title { display: none; }
+}

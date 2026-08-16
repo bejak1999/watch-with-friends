@@ -60,6 +60,8 @@ export interface RoomRow {
   state_at: number;
   repeat_mode: 'off' | 'one' | 'all';
   shuffle: number;
+  /** Playlist this room is working through, so progress is credited to it. */
+  playlist_id: string | null;
 }
 
 export interface QueueItemRow {

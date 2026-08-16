@@ -15,6 +15,9 @@ import type { MediaItem, Member, PlaybackState, QueueItem, RoomSnapshot } from '
 
 type Tab = 'queue' | 'chat' | 'people';
 
+/** Shared by the page control bar and the fullscreen one. */
+const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+
 export function RoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
@@ -390,10 +393,10 @@ export function RoomPage() {
                   }}
                   aria-label="Volume"
                 />
-                <span className="mono tiny faint" style={{ marginLeft: 4 }}>
+                <span className="mono tiny faint fs-time" style={{ marginLeft: 4 }}>
                   {formatTime(displayPosition)} / {formatTime(duration)}
                 </span>
-                <span className="truncate small grow" style={{ minWidth: 0, opacity: 0.85 }}>
+                <span className="truncate small grow fs-title" style={{ minWidth: 0, opacity: 0.85 }}>
                   {currentItem?.title}
                 </span>
                 {captionsAvailable && (
@@ -406,6 +409,36 @@ export function RoomPage() {
                     <Icon name="captions" size={16} />
                   </button>
                 )}
+                {/* Resolution is per viewer, so it never leaves this browser. */}
+                {qualities.length > 1 && (
+                  <select
+                    className="select sm"
+                    value={quality}
+                    onChange={(e) => changeQuality(e.target.value)}
+                    aria-label="Resolution"
+                    title="Resolution - your screen only"
+                  >
+                    {qualities.map((q) => (
+                      <option key={q.id} value={q.id}>
+                        {q.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <select
+                  className="select sm"
+                  value={String(playback.rate)}
+                  onChange={(e) => actions.setRate(Number(e.target.value))}
+                  disabled={!canControl}
+                  aria-label="Speed"
+                  title={canControl ? 'Speed - changes it for everyone' : 'Only hosts can change the speed'}
+                >
+                  {RATES.map((r) => (
+                    <option key={r} value={r}>
+                      {r}×
+                    </option>
+                  ))}
+                </select>
                 <button className="btn ghost icon" onClick={toggleFullscreen} title="Leave fullscreen (f)">
                   <Icon name="collapse" size={16} />
                 </button>
@@ -486,7 +519,7 @@ export function RoomPage() {
                   onChange={(e) => actions.setRate(Number(e.target.value))}
                   title="Playback speed"
                 >
-                  {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].map((r) => (
+                  {RATES.map((r) => (
                     <option key={r} value={r}>{r}×</option>
                   ))}
                 </select>

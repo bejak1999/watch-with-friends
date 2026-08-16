@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { db } from '../db';
 import { newId, requireAuth } from '../auth';
 import { addToQueue, canQueue, memberRole, queueDTO, roomById } from '../services/rooms';
-import { broadcastQueue } from '../realtime';
+import { broadcastQueue, selectQueueItem } from '../realtime';
+import { progressFor, progressForMany, resetProgress, setRoomPlaylist } from '../services/playlistProgress';
 import type { MediaItem } from '../types';
 
 export const playlistsRouter = Router();
@@ -79,9 +80,12 @@ playlistsRouter.get('/', (req, res) => {
     cover: string | null;
   }>;
 
+  const progress = progressForMany(rows.map((r) => r.id));
+
   res.json({
     playlists: rows.map((r) => ({
       id: r.id,
+      progress: progress.get(r.id) ?? null,
       name: r.name,
       description: r.description,
       isShared: r.is_shared === 1,
@@ -183,7 +187,25 @@ playlistsRouter.get('/:id', (req, res) => {
       updatedAt: full.updated_at,
     },
     items: toDTO(itemsOf(row.id)),
+    progress: progressFor(row.id),
   });
+});
+
+/** Forget where we got to - for a rewatch, or an accidental skip. */
+playlistsRouter.delete('/:id/progress', (req, res) => {
+  const { row } = ownedPlaylist(req.params.id, req.user!.id, req.user!.isAdmin);
+  if (!row) {
+    res.status(404).json({ error: 'Playlist not found' });
+    return;
+  }
+  // Anyone who may watch it may reset it: progress is the group's, not one
+  // person's, and the owner is not always the one in the room.
+  if (row.owner_id !== req.user!.id && row.is_shared !== 1 && !req.user!.isAdmin) {
+    res.status(403).json({ error: 'That playlist is private' });
+    return;
+  }
+  resetProgress(row.id);
+  res.json({ ok: true });
 });
 
 const patchSchema = z.object({
@@ -324,7 +346,42 @@ playlistsRouter.post('/:id/load-into/:roomId', (req, res) => {
     res.status(400).json({ error: 'That playlist is empty' });
     return;
   }
-  addToQueue(room.id, req.user!.id, items);
-  broadcastQueue(room.id, `${req.user!.displayName} loaded playlist "${row.name}" (${items.length} videos)`);
-  res.json({ ok: true, added: items.length });
+  const created = addToQueue(room.id, req.user!.id, items);
+  // From here on this room's playback updates the playlist's bookmark.
+  setRoomPlaylist(room.id, row.id);
+
+  const resume = req.body?.resume === true;
+  const saved = progressFor(row.id);
+  let resumedAt: { title: string; position: number } | null = null;
+
+  if (resume && saved) {
+    // Match on source rather than on the queue id: the queue rows were just
+    // created, so the ids the bookmark knew about are long gone.
+    const target = created.find((q) => q.source === saved.source && q.source_id === saved.sourceId);
+    if (target) {
+      selectQueueItem(room.id, target.id, saved.position);
+      resumedAt = { title: target.title, position: saved.position };
+    }
+  } else if (!resume) {
+    // An explicit "start over" is also an instruction to forget the bookmark,
+    // otherwise the next load would offer to resume a position nobody wants.
+    resetProgress(row.id);
+  }
+
+  broadcastQueue(
+    room.id,
+    resumedAt
+      ? `${req.user!.displayName} loaded "${row.name}" and picked up at ${formatClock(resumedAt.position)} of "${resumedAt.title}"`
+      : `${req.user!.displayName} loaded playlist "${row.name}" (${items.length} videos)`
+  );
+  res.json({ ok: true, added: items.length, resumed: resumedAt });
 });
+
+function formatClock(seconds: number): string {
+  const s = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}

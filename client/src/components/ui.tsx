@@ -282,28 +282,54 @@ export function Meter({ used, total }: { used: number; total: number }) {
 }
 
 export function CopyButton({ value, label = 'Copy' }: { value: string; label?: string }) {
+  const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
+
+  useEffect(() => {
+    if (state === 'idle') return;
+    const timer = window.setTimeout(() => setState('idle'), 2000);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(value);
+      setState('done');
+      return;
     } catch {
-      // Clipboard API needs a secure context; fall back to a temporary textarea.
-      const ta = document.createElement('textarea');
-      ta.value = value;
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand('copy');
-      } finally {
-        document.body.removeChild(ta);
-      }
+      // The Clipboard API needs a secure context, which plain http on a LAN
+      // address is not. Fall back to a throwaway textarea.
     }
+    const ta = document.createElement('textarea');
+    ta.value = value;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    } finally {
+      document.body.removeChild(ta);
+    }
+    // Never claim success we did not have - the point of the feedback is that
+    // you can stop wondering whether the link is on your clipboard.
+    setState(ok ? 'done' : 'failed');
   };
+
+  const text = state === 'done' ? 'Copied!' : state === 'failed' ? 'Press Ctrl+C' : label;
+
   return (
-    <button className="btn sm" onClick={copy} title={label}>
-      <Icon name="copy" size={13} />
-      {label}
+    <button
+      className="btn sm"
+      onClick={copy}
+      title={state === 'failed' ? 'Copying was blocked - select the link and copy it yourself' : label}
+      data-copied={state === 'done' || undefined}
+      style={state === 'done' ? { color: 'var(--success)', borderColor: 'var(--success)' } : undefined}
+    >
+      <Icon name={state === 'done' ? 'check' : 'copy'} size={13} />
+      {text}
     </button>
   );
 }

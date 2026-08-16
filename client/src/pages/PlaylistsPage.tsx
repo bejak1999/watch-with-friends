@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, type MediaItem, type PlaylistSummary, type RoomSummary } from '../lib/api';
+import { api, type MediaItem, type PlaylistProgress, type PlaylistSummary, type RoomSummary } from '../lib/api';
 import { useApp } from '../state/AppState';
 import { EmptyState, Field, Icon, Modal, Spinner, Toggle } from '../components/ui';
 import { formatTime, relativeTime, sourceLabel } from '../lib/format';
 
 interface PlaylistDetail {
+  progress: PlaylistProgress | null;
   playlist: {
     id: string;
     name: string;
@@ -120,13 +121,30 @@ function PlaylistCard({ playlist, onOpen }: { playlist: PlaylistSummary; onOpen:
           <span className="pill">{playlist.itemCount} videos</span>
           {playlist.isShared && <span className="pill">shared</span>}
         </div>
+        {/* How far the group got, drawn along the bottom of the cover. */}
+        {playlist.progress && playlist.progress.itemCount > 0 && (
+          <div className="card-progress">
+            <div
+              style={{
+                width: `${Math.min(100, (playlist.progress.itemIndex / playlist.progress.itemCount) * 100)}%`,
+              }}
+            />
+          </div>
+        )}
       </div>
       <div className="room-card-body">
         <div className="truncate" style={{ fontWeight: 650 }}>{playlist.name}</div>
         <div className="tiny faint truncate">
           {playlist.description || (playlist.mine ? 'Your playlist' : `by ${playlist.ownerName ?? 'someone'}`)}
         </div>
-        <div className="tiny faint">Updated {relativeTime(playlist.updatedAt)}</div>
+        {playlist.progress ? (
+          <div className="tiny truncate" style={{ color: 'var(--accent)' }}>
+            ▶ {playlist.progress.itemIndex > 0 ? `${playlist.progress.itemIndex}/${playlist.progress.itemCount} · ` : ''}
+            {playlist.progress.title} at {formatTime(playlist.progress.position)}
+          </div>
+        ) : (
+          <div className="tiny faint">Updated {relativeTime(playlist.updatedAt)}</div>
+        )}
       </div>
     </button>
   );
@@ -290,13 +308,31 @@ function PlaylistDetailModal({
     onChanged();
   };
 
-  const loadInto = async (roomId: string) => {
+  const loadInto = async (roomId: string, resume: boolean) => {
     try {
-      const res = await api.post<{ added: number }>(`/playlists/${id}/load-into/${roomId}`);
-      toast(`Queued ${res.added} videos`, 'success');
+      const res = await api.post<{ added: number; resumed: { title: string; position: number } | null }>(
+        `/playlists/${id}/load-into/${roomId}`,
+        { resume }
+      );
+      toast(
+        res.resumed
+          ? `Picked up at ${formatTime(res.resumed.position)} of "${res.resumed.title}"`
+          : `Queued ${res.added} videos`,
+        'success'
+      );
       onClose();
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not load it', 'error');
+    }
+  };
+
+  const forgetProgress = async () => {
+    try {
+      await api.del(`/playlists/${id}/progress`);
+      setData((prev) => (prev ? { ...prev, progress: null } : prev));
+      toast('Starting from the beginning next time', 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not reset it', 'error');
     }
   };
 
@@ -341,13 +377,38 @@ function PlaylistDetailModal({
         {data.playlist.isShared && <span className="tag">shared</span>}
       </div>
 
+      {data.progress && (
+        <div className="row between card" style={{ padding: '10px 12px', gap: 10, flexWrap: 'wrap' }}>
+          <div className="small" style={{ minWidth: 0 }}>
+            <strong>Where you got to:</strong>{' '}
+            {data.progress.itemIndex > 0 ? `${data.progress.itemIndex} of ${data.progress.itemCount} · ` : ''}
+            <span className="truncate">{data.progress.title}</span> at {formatTime(data.progress.position)}
+            <div className="tiny faint">Saved {relativeTime(data.progress.updatedAt)}</div>
+          </div>
+          <button className="btn sm" onClick={forgetProgress}>
+            <Icon name="refresh" size={13} /> Start over next time
+          </button>
+        </div>
+      )}
+
       {joinable.length > 0 && (
-        <Field label="Load into a room">
+        <Field
+          label="Load into a room"
+          hint={data.progress ? 'Continue picks up where the group left off.' : undefined}
+        >
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
             {joinable.slice(0, 8).map((r) => (
-              <button className="btn sm" key={r.id} onClick={() => loadInto(r.id)}>
-                <Icon name="play" size={12} /> {r.name}
-              </button>
+              <span className="row" key={r.id} style={{ gap: 2 }}>
+                <button className="btn sm" onClick={() => loadInto(r.id, Boolean(data.progress))}>
+                  <Icon name="play" size={12} /> {r.name}
+                  {data.progress ? ' – continue' : ''}
+                </button>
+                {data.progress && (
+                  <button className="btn sm" onClick={() => loadInto(r.id, false)} title={`Load into ${r.name} from the start`}>
+                    from the start
+                  </button>
+                )}
+              </span>
             ))}
           </div>
         </Field>

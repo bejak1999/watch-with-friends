@@ -193,6 +193,29 @@ MIGRATIONS.push((d) => {
   `);
 });
 
+MIGRATIONS.push((d) => {
+  d.exec(`
+    -- Where a playlist got to, shared by everyone rather than per person:
+    -- the point is to carry on together, not to track individuals.
+    CREATE TABLE playlist_progress (
+      playlist_id TEXT PRIMARY KEY,
+      source      TEXT NOT NULL,
+      source_id   TEXT NOT NULL,
+      title       TEXT NOT NULL,
+      position    REAL NOT NULL DEFAULT 0,
+      -- Index within the playlist, so the UI can say "3 of 12" without a join.
+      item_index  INTEGER NOT NULL DEFAULT 0,
+      item_count  INTEGER NOT NULL DEFAULT 0,
+      updated_at  INTEGER NOT NULL,
+      updated_by  TEXT
+    );
+
+    -- Which playlist a room is working through, so playback can be credited
+    -- back to it. NULL means the queue was assembled by hand.
+    ALTER TABLE rooms ADD COLUMN playlist_id TEXT;
+  `);
+});
+
 export function migrate(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {

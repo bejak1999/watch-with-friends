@@ -26,6 +26,7 @@ import {
 import { z } from 'zod';
 import { creditWatchTime, logPlay } from './services/stats';
 import { createLogger } from './services/logger';
+import { recordProgress, setRoomPlaylist } from './services/playlistProgress';
 import type { MediaItem, PublicUser, RoomRole } from './types';
 
 const log = createLogger('sync');
@@ -348,6 +349,17 @@ function selectItem(roomId: string, itemId: string | null, autoplay: boolean) {
   autoPaused.set(roomId, false);
   emitPlayback(roomId);
   broadcastQueue(roomId);
+}
+
+/**
+ * Jump the room straight to a queue item at a given offset. Used when a
+ * playlist is loaded with "continue where we left off", which has to land
+ * mid-track rather than at zero like a normal track change.
+ */
+export function selectQueueItem(roomId: string, itemId: string, position: number): void {
+  selectItem(roomId, itemId, false);
+  writePlayback(roomId, { position: Math.max(0, position), isPlaying: false });
+  emitPlayback(roomId);
 }
 
 function advance(roomId: string, direction: 1 | -1 = 1) {
@@ -742,6 +754,9 @@ export function initRealtime(httpServer: HttpServer): Server {
       const room = currentRoom()!;
       const keep = payload?.keepCurrent === false ? null : room.current_item_id;
       clearQueue(room.id, keep);
+      // The queue is no longer the playlist, so stop moving its bookmark.
+      // The bookmark itself survives - clearing a queue is not "start over".
+      if (!keep) setRoomPlaylist(room.id, null);
       if (!keep) writePlayback(room.id, { currentItemId: null, isPlaying: false, position: 0 });
       emitPlayback(room.id);
       broadcastQueue(room.id, `${state.user.displayName} cleared the queue`);
@@ -851,6 +866,22 @@ export function initRealtime(httpServer: HttpServer): Server {
 
       const room = roomById(roomId);
       if (!room || room.is_playing !== 1) continue;
+
+      // Keep the room's playlist bookmark current while it plays, so leaving
+      // mid-episode and coming back tomorrow lands in the right place.
+      if (room.playlist_id && payload && room.current_item_id) {
+        const item = db.prepare('SELECT source, source_id, title FROM queue_items WHERE id = ?').get(
+          room.current_item_id
+        ) as { source: string; source_id: string; title: string } | undefined;
+        if (item) {
+          recordProgress(
+            room.playlist_id,
+            { source: item.source, sourceId: item.source_id, title: item.title },
+            payload.position + (Date.now() - payload.stateAt) / 1000
+          );
+        }
+      }
+
       const watching = new Set<string>();
       for (const s of socketsIn(roomId)) {
         const st = socketState.get(s);
