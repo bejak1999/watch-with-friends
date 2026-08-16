@@ -137,6 +137,8 @@ export interface RoomSnapshot {
   controlMode: 'everyone' | 'hosts';
   queueMode: 'everyone' | 'hosts';
   waitForBuffer: boolean;
+  /** Playlist this room's queue came from, if any. */
+  playlistId: string | null;
   createdAt: number;
   myRole: 'owner' | 'host' | 'member' | null;
   permissions: { canControl: boolean; canQueue: boolean; canManage: boolean };

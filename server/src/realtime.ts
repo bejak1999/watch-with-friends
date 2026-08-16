@@ -216,6 +216,8 @@ export function roomSnapshot(roomId: string, user: PublicUser) {
     controlMode: room.control_mode,
     queueMode: room.queue_mode,
     waitForBuffer: room.wait_for_buffer === 1,
+    /** Playlist this queue came from, so the room can say what it is watching. */
+    playlistId: room.playlist_id,
     createdAt: room.created_at,
     myRole: role,
     permissions: {

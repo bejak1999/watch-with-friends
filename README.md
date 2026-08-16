@@ -28,7 +28,7 @@ no random strangers. Just you, your friends, and a shared play button.
 | ⏱️ | **Real sync.** The server owns the clock. Clients measure their own latency, then correct drift continuously — nudging speed for small gaps, seeking for big ones. |
 | ⏸️ | **Wait for everyone.** Somebody buffering? The room pauses on its own and resumes together. No more "wait, pause, I'm behind". |
 | 📋 | **Persistent queue + playlists.** Queues survive restarts. Save any queue as a playlist and drop it into any room later. |
-| 🔖 | **Pick up where you stopped.** A playlist remembers which episode you were on and how far in — for the whole group, not per person. Load it again next week and carry on, or reset it if somebody skipped by accident. |
+| 🔖 | **Pick up where you stopped.** A playlist remembers which episode you were on and how far in — for the whole group, not per person. The **Lists** tab in every room shows the bookmark, with *Continue*, *Start over*, and a reset for when somebody skipped by accident. Save the current queue as a playlist from the same tab. |
 | 💬 | **Chat & presence.** See who's online, who's buffering, and how far off the room clock each person is. |
 | 👑 | **Host controls.** Let everyone drive, or lock playback and the queue to hosts. Promote, remove, or block people. |
 | 🛡️ | **Brute-force protection.** Three free mistakes, then every wrong password doubles the wait — 2s, 4s, 8s… up to 15 minutes. |

@@ -5,6 +5,7 @@ import { useRoom } from '../hooks/useRoom';
 import { SyncPlayer, expectedPosition, type SyncPlayerHandle } from '../components/player/SyncPlayer';
 import type { QualityOption } from '../components/player/adapters';
 import { QueuePanel } from '../components/room/QueuePanel';
+import { PlaylistsPanel } from '../components/room/PlaylistsPanel';
 import { ChatPanel } from '../components/room/ChatPanel';
 import { PeoplePanel } from '../components/room/PeoplePanel';
 import { AddMediaDialog } from '../components/room/AddMediaDialog';
@@ -13,7 +14,7 @@ import { CopyButton, Icon, Spinner } from '../components/ui';
 import { formatTime, sourceLabel } from '../lib/format';
 import type { MediaItem, Member, PlaybackState, QueueItem, RoomSnapshot } from '../lib/api';
 
-type Tab = 'queue' | 'chat' | 'people';
+type Tab = 'queue' | 'playlists' | 'chat' | 'people';
 
 /** Shared by the page control bar and the fullscreen one. */
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
@@ -609,6 +610,9 @@ export function RoomPage() {
             <button className="tab" role="tab" aria-selected={tab === 'queue'} onClick={() => setTab('queue')}>
               <Icon name="list" size={14} /> Queue <span className="count">{queue.length}</span>
             </button>
+            <button className="tab" role="tab" aria-selected={tab === 'playlists'} onClick={() => setTab('playlists')}>
+              <Icon name="list" size={14} /> Lists
+            </button>
             <button className="tab" role="tab" aria-selected={tab === 'chat'} onClick={() => setTab('chat')}>
               <Icon name="chat" size={14} /> Chat
               {unread > 0 && <span className="count">{unread}</span>}
@@ -629,6 +633,14 @@ export function RoomPage() {
               repeatMode={playback.repeatMode}
               actions={actions}
               onAddClick={() => setAdding(true)}
+            />
+          )}
+          {tab === 'playlists' && (
+            <PlaylistsPanel
+              roomId={room.id}
+              queue={queue}
+              canQueue={canQueue}
+              activePlaylistId={room.playlistId}
             />
           )}
           {tab === 'chat' && (

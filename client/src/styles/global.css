@@ -1477,3 +1477,17 @@ img.avatar { object-fit: cover; }
 @media (max-width: 760px) {
   .fs-bar .fs-title { display: none; }
 }
+
+/* Playlist rows in the room's side panel. */
+.pl-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+}
+.pl-row:hover { background: var(--surface-2); }
+.pl-row[data-active] { border-color: var(--accent); background: var(--accent-soft); }
+.pl-main { min-width: 0; }
+.pl-actions { display: flex; gap: 4px; flex-wrap: wrap; }
