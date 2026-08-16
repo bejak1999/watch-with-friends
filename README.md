@@ -451,6 +451,7 @@ Common things the log will tell you outright:
 | A link will not add | `media` → `provider failed` — with the site's own error |
 | Someone cannot sign in | `auth` → `login failed` or `login blocked by back-off` |
 | The room froze | `sync` → `gave up on stuck viewers` after 25s |
+| It was paused when I came back | `sync` → `froze an abandoned room` — everyone had been gone 45s |
 | Random disconnects | `sync` → `disconnected` with the reason |
 
 ---

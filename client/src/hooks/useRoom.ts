@@ -78,6 +78,10 @@ export function useRoom(roomId: string | undefined) {
         setMessages(res.messages ?? []);
         setMembers(res.members ?? []);
         if (res.room?.playback) setPlayback(res.room.playback);
+        // Take the wait state from the snapshot rather than trusting whatever
+        // the last sync:waiting event left behind. A reconnect used to strand
+        // the banner on screen over a room that was playing fine.
+        setWaitingForBuffer(res.room?.waiting === true);
         setStatus('ready');
         setError(null);
       });
@@ -90,7 +94,13 @@ export function useRoom(roomId: string | undefined) {
       setConnected(true);
       join();
     };
-    const onDisconnect = () => setConnected(false);
+    const onDisconnect = () => {
+      setConnected(false);
+      // We can no longer know whether the room is still holding, and the join
+      // that follows will tell us the truth. Better a missing banner for a
+      // moment than a stale one that never clears.
+      setWaitingForBuffer(false);
+    };
     const onConnectError = (err: Error) => {
       setConnected(false);
       if (err.message === 'unauthorised') {
@@ -115,7 +125,10 @@ export function useRoom(roomId: string | undefined) {
         });
       }
     };
-    const onRoomUpdated = (p: { room: RoomSnapshot }) => setRoom(p.room);
+    const onRoomUpdated = (p: { room: RoomSnapshot }) => {
+      setRoom(p.room);
+      setWaitingForBuffer(p.room.waiting === true);
+    };
     const onKicked = (p: { reason: string }) => {
       setError(p.reason);
       setStatus('kicked');

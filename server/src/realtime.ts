@@ -135,6 +135,14 @@ function scheduleEmptyRoomFreeze(roomId: string): void {
     if (room?.is_playing === 1) {
       writePlayback(roomId, { isPlaying: false });
       emitPlayback(roomId);
+      // Worth a line: "it was paused when I came back" and "it stopped on its
+      // own" look identical from the outside, and this is one of the few
+      // things that pauses a room without anybody pressing anything.
+      log.info('froze an abandoned room', {
+        room: roomId,
+        afterMs: EMPTY_ROOM_GRACE_MS,
+        position: room.position,
+      });
     }
   }, EMPTY_ROOM_GRACE_MS);
   timer.unref?.();
@@ -218,6 +226,14 @@ export function roomSnapshot(roomId: string, user: PublicUser) {
     waitForBuffer: room.wait_for_buffer === 1,
     /** Playlist this queue came from, so the room can say what it is watching. */
     playlistId: room.playlist_id,
+    /**
+     * Whether the room is currently holding for somebody. The banner used to be
+     * driven only by the sync:waiting event, so a client that missed the "all
+     * clear" - a reconnect is enough - showed "Waiting for everyone" forever
+     * over a room that was playing perfectly well. Carry the truth in the
+     * snapshot so every join corrects itself.
+     */
+    waiting: autoPaused.get(roomId) === true,
     createdAt: room.created_at,
     myRole: role,
     permissions: {

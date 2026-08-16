@@ -139,6 +139,8 @@ export interface RoomSnapshot {
   waitForBuffer: boolean;
   /** Playlist this room's queue came from, if any. */
   playlistId: string | null;
+  /** True while the room is holding for somebody who is still buffering. */
+  waiting: boolean;
   createdAt: number;
   myRole: 'owner' | 'host' | 'member' | null;
   permissions: { canControl: boolean; canQueue: boolean; canManage: boolean };
