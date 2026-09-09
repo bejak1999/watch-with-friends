@@ -1,6 +1,16 @@
 import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import type { PlaybackState, QueueItem } from '../../lib/api';
 import { createAdapter, type Adapter, type QualityOption } from './adapters';
+import { Icon } from '../ui';
+
+/** Where a viewer can watch this themselves when the embed is refused. */
+function externalLink(item: QueueItem | null): string | null {
+  if (!item) return null;
+  if (item.source === 'youtube') return `https://www.youtube.com/watch?v=${encodeURIComponent(item.sourceId)}`;
+  if (item.source === 'vimeo') return `https://vimeo.com/${encodeURIComponent(item.sourceId)}`;
+  if (item.url && /^https?:\/\//i.test(item.url)) return item.url;
+  return null;
+}
 
 export interface SyncPlayerHandle {
   /** Change the local rendition. Never synced - each viewer has their own line. */
@@ -37,6 +47,8 @@ interface Props {
   onExternalSeek: (position: number) => void;
   /** One-off explanation shown to the viewer. */
   onNotice: (message: string) => void;
+  /** Move the room past an item this browser cannot play. */
+  onSkip: () => void;
   /** Reports the resolutions this source can offer, once they are known. */
   onQualities: (options: QualityOption[], activeId: string) => void;
   /** Whether this source has subtitles at all, so the button can hide. */
@@ -73,6 +85,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     onNotice,
     onCaptionsAvailable,
     captionsOn,
+    onSkip,
   },
   ref
 ) {
@@ -363,7 +376,27 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
           <div className="inner">
             <div style={{ fontSize: '1.8rem' }}>⚠️</div>
             <div style={{ fontWeight: 600 }}>{loadError}</div>
-            <div className="small faint">Skip to the next item in the queue, or try a different link.</div>
+            <div className="small faint">
+              Nothing here can fix this from inside the page - the site itself refused the embed.
+            </div>
+            <div className="row" style={{ gap: 8, marginTop: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
+              {externalLink(item) && (
+                <a
+                  className="btn"
+                  href={externalLink(item)!}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Opens in a new tab - only for you, the room stays where it is"
+                >
+                  <Icon name="link" size={15} /> Watch it on the site
+                </a>
+              )}
+              {canControl && (
+                <button className="btn primary" onClick={onSkip}>
+                  <Icon name="next" size={15} /> Skip for everyone
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

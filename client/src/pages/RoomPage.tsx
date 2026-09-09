@@ -306,6 +306,7 @@ export function RoomPage() {
             canControl={canControl}
             onExternalSeek={onExternalSeek}
             onNotice={onNotice}
+            onSkip={() => actions.next()}
           />
 
           {/* Keeps clicks from reaching the embedded player so the room stays authoritative. */}
