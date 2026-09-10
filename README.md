@@ -28,6 +28,7 @@ no random strangers. Just you, your friends, and a shared play button.
 | ⏱️ | **Real sync.** The server owns the clock. Clients measure their own latency, then correct drift continuously — nudging speed for small gaps, seeking for big ones. |
 | ⏸️ | **Wait for everyone.** Somebody buffering? The room pauses on its own and resumes together. No more "wait, pause, I'm behind". |
 | 📋 | **Persistent queue + playlists.** Queues survive restarts. Save any queue as a playlist and drop it into any room later. |
+| 🔁 | **Restream.** Some videos refuse to be embedded anywhere. Switch restreaming on and the server fetches those itself and passes them to the room, with a visible border and badge so nobody mistakes it for a normal embed. Admin sets the quality ceiling, because it runs on your uplink. |
 | 🔖 | **Pick up where you stopped.** A playlist remembers which episode you were on and how far in — for the whole group, not per person. The **Lists** tab in every room shows the bookmark, with *Continue*, *Start over*, and a reset for when somebody skipped by accident. Save the current queue as a playlist from the same tab. |
 | 💬 | **Chat & presence.** See who's online, who's buffering, and how far off the room clock each person is. |
 | 👑 | **Host controls.** Let everyone drive, or lock playback and the queue to hosts. Promote, remove, or block people. |
@@ -393,6 +394,7 @@ microphone and geolocation.
 | `YOUTUBE_API_KEY` | — | Overridden by a key saved in the admin panel |
 | `CLIENT_DIR` | `../client/dist` | Where the built UI lives |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `YTDLP_PATH` | bundled venv | Path to yt-dlp, if you want your own build |
 
 ---
 
@@ -410,6 +412,51 @@ microphone and geolocation.
 | `D` | 🐞 Diagnostics overlay |
 | `F` | 🖥️ Fullscreen — seek, play, volume, speed, resolution and subtitles ride on the picture and fade out when the mouse stops |
 
+
+---
+
+## 🔁 Restreaming
+
+Some videos cannot be embedded on any site — the rights holder switched it off.
+YouTube answers those with error 101/150, and **no embed trick gets past it**: not
+`youtube-nocookie`, not dropping the `origin` parameter, not a `no-referrer`
+policy (that one makes it worse, error 153). It is enforced on purpose.
+
+So the app can take the other road: **Admin → Settings → Restream**. With it on,
+a refused video is fetched by your server and handed to the room as a normal
+stream. The player shows an amber border and a **Restream via server** badge, so
+it is always obvious which path a video took.
+
+> [!IMPORTANT]
+> **It runs on your upload bandwidth, once per viewer.** Google's stream URLs are
+> tied to the IP that requested them, so your server has to pass the data on
+> rather than pointing browsers at Google directly. Four people watching 1080p is
+> roughly 18 Mbit/s leaving your line. **Set the ceiling to match your uplink** —
+> the cap is applied on the server, so nobody can pick something higher.
+>
+> It also **breaks YouTube's terms of service**, which is your call to make on
+> your own server. It is off by default for both reasons.
+
+**Age-restricted videos** mostly do *not* work. YouTube wants a signed-in,
+age-verified account, and restreaming cannot talk its way past that without one.
+When that is the reason, the player says so plainly rather than failing silently.
+
+### When restreaming stops working
+
+It will, eventually. yt-dlp is the moving part — YouTube changes how streams are
+served every few weeks and yt-dlp catches up shortly after. The admin panel shows
+the installed version, when it last worked, and the last error, and puts a banner
+up once failures look systemic rather than like one awkward video.
+
+To update it without waiting for a new image:
+
+```bash
+docker exec -u 0 watch-with-friends /opt/ytdlp/bin/pip install -U yt-dlp
+```
+
+Then press **Check again** in Admin → Settings → Restream. Pulling a newer image
+also brings a newer yt-dlp. If it still fails afterwards, **Admin → Logs** says
+whether it is an age gate, a bot check, or something genuinely new.
 
 ---
 

@@ -61,6 +61,8 @@ export function RoomPage() {
   // Collapsing the side panel is remembered per device.
   const [sideCollapsed, setSideCollapsed] = useState(() => localStorage.getItem('wwf.sideCollapsed') === '1');
   const [debugOpen, setDebugOpen] = useState(false);
+  /** True while this viewer's picture is coming through the server, not the site. */
+  const [restreaming, setRestreaming] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   /** Fullscreen has no chrome of its own, so the bar rides on the picture. */
   const [chromeVisible, setChromeVisible] = useState(true);
@@ -282,7 +284,7 @@ export function RoomPage() {
         <div
           className={`stage${sideCollapsed ? ' wide' : ''}${fullscreen ? ' fullscreen' : ''}${
             fullscreen && !chromeVisible ? ' idle' : ''
-          }`}
+          }${restreaming ? ' restreaming' : ''}`}
           ref={stageRef}
           onPointerMove={fullscreen ? showChrome : undefined}
           onPointerDown={fullscreen ? showChrome : undefined}
@@ -307,6 +309,7 @@ export function RoomPage() {
             onExternalSeek={onExternalSeek}
             onNotice={onNotice}
             onSkip={() => actions.next()}
+            onRestreaming={setRestreaming}
           />
 
           {/* Keeps clicks from reaching the embedded player so the room stays authoritative. */}
@@ -342,15 +345,22 @@ export function RoomPage() {
             </div>
           )}
 
-          {waitingForBuffer && armed && (
-            <div
-              className="pill"
-              style={{ position: 'absolute', top: 12, left: 12, zIndex: 6, height: 26 }}
-            >
-              <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />
-              Waiting for everyone…
-            </div>
-          )}
+          <div className="stage-badges">
+            {restreaming && (
+              <div
+                className="pill restream-pill"
+                title="This site refused to be embedded, so the video is coming through your own server instead. Quality is capped by the admin setting."
+              >
+                <Icon name="sync" size={12} /> Restream via server
+              </div>
+            )}
+            {waitingForBuffer && armed && (
+              <div className="pill" style={{ height: 26 }}>
+                <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />
+                Waiting for everyone…
+              </div>
+            )}
+          </div>
 
           {!connected && (
             <div className="pill" style={{ position: 'absolute', top: 12, right: 12, zIndex: 6, height: 26 }}>

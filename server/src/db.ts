@@ -242,6 +242,11 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   upload_default_user_quota_gb: '5',
   max_upload_size_gb: '4',
   chat_history_limit: '300',
+  // Restreaming is off until an admin turns it on: it routes video through this
+  // server's uplink and leans on yt-dlp, so it should be a deliberate choice.
+  restream_enabled: '0',
+  // Ceiling in pixels of height. 0 means "whatever the source offers".
+  restream_max_height: '720',
 };
 
 export function getSetting(key: string): string {

@@ -769,6 +769,8 @@ function SettingsTab() {
         upload_default_user_quota_gb: Number(res.settings.upload_default_user_quota_gb),
         max_upload_size_gb: Number(res.settings.max_upload_size_gb),
         chat_history_limit: Number(res.settings.chat_history_limit),
+        restream_enabled: res.settings.restream_enabled === '1',
+        restream_max_height: Number(res.settings.restream_max_height),
       });
     });
   }, []);
@@ -817,6 +819,12 @@ function SettingsTab() {
           />
         </Field>
       </section>
+
+      <RestreamSection
+        enabled={Boolean(form.restream_enabled)}
+        maxHeight={Number(form.restream_max_height ?? 720)}
+        onChange={set}
+      />
 
       <section className="panel">
         <h2>Integrations</h2>
@@ -1229,6 +1237,151 @@ function LogsTab() {
             ))}
         </div>
       )}
+    </section>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Restream                                                          */
+/* ---------------------------------------------------------------- */
+
+interface RestreamHealth {
+  installed: boolean;
+  version: string | null;
+  lastOkAt: number | null;
+  lastErrorAt: number | null;
+  lastError: string | null;
+  lastErrorKind: string | null;
+  consecutiveFailures: number;
+  looksBroken: boolean;
+}
+
+/** The rungs YouTube actually publishes, plus an explicit "no ceiling". */
+const RESTREAM_HEIGHTS: Array<{ value: number; label: string; hint: string }> = [
+  { value: 360, label: '360p', hint: 'about 0.7 Mbit/s per viewer' },
+  { value: 480, label: '480p', hint: 'about 1.2 Mbit/s per viewer' },
+  { value: 720, label: '720p', hint: 'about 2.5 Mbit/s per viewer' },
+  { value: 1080, label: '1080p', hint: 'about 4.5 Mbit/s per viewer' },
+  { value: 1440, label: '1440p', hint: 'about 9 Mbit/s per viewer' },
+  { value: 2160, label: '2160p', hint: 'about 20 Mbit/s per viewer' },
+  { value: 0, label: 'No limit', hint: 'whatever the source offers - can saturate your uplink' },
+];
+
+function RestreamSection({
+  enabled,
+  maxHeight,
+  onChange,
+}: {
+  enabled: boolean;
+  maxHeight: number;
+  onChange: (key: string, value: unknown) => void;
+}) {
+  const { toast } = useApp();
+  const [health, setHealth] = useState<RestreamHealth | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  const load = useCallback(() => {
+    api
+      .get<{ health: RestreamHealth }>('/admin/restream')
+      .then((res) => setHealth(res.health))
+      .catch(() => setHealth(null));
+  }, []);
+
+  useEffect(load, [load]);
+
+  const recheck = async () => {
+    setChecking(true);
+    try {
+      const res = await api.post<{ health: RestreamHealth }>('/admin/restream/recheck');
+      setHealth(res.health);
+      toast(res.health.installed ? `yt-dlp ${res.health.version} found` : 'yt-dlp still not found', res.health.installed ? 'success' : 'error');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not check', 'error');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const chosen = RESTREAM_HEIGHTS.find((h) => h.value === maxHeight) ?? RESTREAM_HEIGHTS[2];
+
+  return (
+    <section className="panel">
+      <h2>Restream</h2>
+      <div className="sub small">
+        Some sites refuse to be embedded. When that happens this server can fetch the video itself and pass it on.
+        Everything then travels over <strong>your</strong> uplink, once per viewer — which is what the quality ceiling
+        below is for.
+      </div>
+
+      {health?.looksBroken && (
+        <div className="form-warning">
+          <strong>Restreaming is not working right now.</strong>{' '}
+          {health.installed
+            ? `yt-dlp ${health.version ?? ''} has failed ${health.consecutiveFailures} times in a row. YouTube changes things often and yt-dlp usually needs updating to keep up — update it in the container, then press "Check again".`
+            : 'yt-dlp is not installed in the container, so there is nothing to restream with.'}
+        </div>
+      )}
+
+      <Toggle
+        checked={enabled}
+        onChange={(v) => onChange('restream_enabled', v)}
+        label="Restream videos that refuse to be embedded"
+        hint="Off by default. This leans on yt-dlp and on your upload bandwidth, so it should be a deliberate choice."
+      />
+
+      <Field
+        label="Highest quality a restream may use"
+        hint={`${chosen.hint}. The ceiling is applied on the server, so nobody can pick something higher.`}
+      >
+        <select
+          className="select"
+          value={String(maxHeight)}
+          onChange={(e) => onChange('restream_max_height', Number(e.target.value))}
+        >
+          {RESTREAM_HEIGHTS.map((h) => (
+            <option key={h.value} value={h.value}>
+              {h.label} — {h.hint}
+            </option>
+          ))}
+        </select>
+      </Field>
+
+      <div className="row between wrap" style={{ gap: 8 }}>
+        <div className="small">
+          {!health ? (
+            <span className="faint">Checking…</span>
+          ) : health.installed ? (
+            <>
+              <span className="tag ok">✓ yt-dlp {health.version}</span>
+              {health.lastOkAt && <span className="tiny faint"> · last worked {relativeTime(health.lastOkAt)}</span>}
+            </>
+          ) : (
+            <span className="tag">yt-dlp not found</span>
+          )}
+        </div>
+        <button className="btn sm" onClick={recheck} disabled={checking}>
+          {checking ? <span className="spinner" /> : <Icon name="refresh" size={14} />} Check again
+        </button>
+      </div>
+
+      {health?.lastError && (
+        <div className="tiny faint" style={{ wordBreak: 'break-word' }}>
+          Last error{health.lastErrorAt ? ` (${relativeTime(health.lastErrorAt)})` : ''}: {health.lastError}
+        </div>
+      )}
+
+      <details className="small">
+        <summary style={{ cursor: 'pointer' }}>If restreaming stops working</summary>
+        <div className="tiny faint" style={{ marginTop: 6, lineHeight: 1.6 }}>
+          yt-dlp is the moving part here — YouTube changes how streams are served every few weeks and yt-dlp catches up
+          shortly after. When restreams start failing, update it inside the container and press <em>Check again</em>:
+          <br />
+          <code>docker exec -u 0 &lt;container&gt; pip install --break-system-packages -U yt-dlp</code>
+          <br />
+          A container restart also picks up a newer bundled version. If it keeps failing after an update, YouTube may be
+          asking this server to prove it is not a bot — the log under Admin → Logs says which it is.
+        </div>
+      </details>
     </section>
   );
 }

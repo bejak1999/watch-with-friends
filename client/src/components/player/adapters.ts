@@ -16,7 +16,11 @@ export interface AdapterCallbacks {
   onDuration: (seconds: number) => void;
   /** Fired when the embedded player changed state on its own (user clicked it). */
   onLocalIntent?: (intent: 'play' | 'pause') => void;
-  onError: (message: string) => void;
+  /**
+   * `kind` matters: an embed refusal is the one failure the app can route
+   * around, by streaming the video through the server instead.
+   */
+  onError: (message: string, kind?: 'embed-refused' | 'other') => void;
 }
 
 export interface Adapter {
@@ -195,7 +199,9 @@ class YouTubeAdapter implements Adapter {
             101: 'The uploader does not allow this video to be embedded',
             150: 'The uploader does not allow this video to be embedded',
           };
-          this.cb.onError(messages[e.data] || 'YouTube could not play this video');
+          // 101 and 150 are the same refusal reported through two code paths.
+          const refused = e.data === 101 || e.data === 150 || e.data === 5;
+          this.cb.onError(messages[e.data] || 'YouTube could not play this video', refused ? 'embed-refused' : 'other');
         },
       },
     });

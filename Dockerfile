@@ -29,13 +29,29 @@ RUN npm prune --omit=dev && mkdir -p /app/server/node_modules
 FROM node:22-bookworm-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates tini \
+    ca-certificates tini python3 python3-venv \
     && rm -rf /var/lib/apt/lists/*
+
+# yt-dlp powers restreaming - playing a video through this server when the site
+# refuses to be embedded. It lives in its own venv because Debian marks the
+# system Python as externally managed, and because it is the one dependency
+# that needs updating on its own schedule: YouTube changes things every few
+# weeks and yt-dlp catches up shortly after. To update without waiting for a
+# new image:
+#
+#   docker exec -u 0 <container> /opt/ytdlp/bin/pip install -U yt-dlp
+#
+# Restreaming stays off until an admin turns it on, so a missing or stale
+# yt-dlp never affects a server that does not use the feature.
+RUN python3 -m venv /opt/ytdlp \
+    && /opt/ytdlp/bin/pip install --no-cache-dir --upgrade pip yt-dlp \
+    && /opt/ytdlp/bin/yt-dlp --version
 
 ENV NODE_ENV=production \
     PORT=8080 \
     DATA_DIR=/data \
-    CLIENT_DIR=/app/client/dist
+    CLIENT_DIR=/app/client/dist \
+    YTDLP_PATH=/opt/ytdlp/bin/yt-dlp
 
 WORKDIR /app
 
@@ -47,7 +63,7 @@ COPY --from=build /app/client/dist ./client/dist
 COPY --from=build /app/package.json ./package.json
 
 # The image runs unprivileged; the volume must be writable by uid 1000.
-RUN mkdir -p /data && chown -R node:node /data /app
+RUN mkdir -p /data && chown -R node:node /data /app /opt/ytdlp
 USER node
 
 VOLUME ["/data"]

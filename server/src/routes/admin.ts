@@ -12,6 +12,7 @@ import { forgetRoom, kickUser } from '../realtime';
 import { deleteAvatarFiles } from './avatars';
 import { globalStats } from '../services/stats';
 import { createLogger, currentLogLevel, logsAsText, recentLogs, type LogLevel } from '../services/logger';
+import { ensureRunner, forgetCached, forgetRunner, restreamHealth } from '../services/ytdlp';
 import multer from 'multer';
 import {
   BackupError,
@@ -240,6 +241,11 @@ const settingsSchema = z.object({
   upload_default_user_quota_gb: z.number().min(0).max(1000000).optional(),
   max_upload_size_gb: z.number().min(0.1).max(1000).optional(),
   chat_history_limit: z.number().int().min(20).max(5000).optional(),
+  restream_enabled: z.boolean().optional(),
+  // 0 means no ceiling; the rest are the rungs YouTube actually publishes.
+  restream_max_height: z.number().int().refine((n) => [0, 144, 240, 360, 480, 720, 1080, 1440, 2160].includes(n), {
+    message: 'Pick one of the offered resolutions',
+  }).optional(),
 });
 
 adminRouter.patch('/settings', (req, res) => {
@@ -298,6 +304,26 @@ adminRouter.get('/lockouts', (_req, res) => {
 adminRouter.delete('/lockouts/:key', (req, res) => {
   clearLockout(decodeURIComponent(req.params.key));
   res.json({ ok: true });
+});
+
+/* ------------------------------------------------------------------ */
+/* Restream                                                            */
+/* ------------------------------------------------------------------ */
+
+adminRouter.get('/restream', async (_req, res) => {
+  // Probe once so a fresh container reports honestly instead of "unknown".
+  await ensureRunner();
+  res.json({ health: restreamHealth() });
+});
+
+/** Re-probe after installing or updating yt-dlp, without a restart. */
+adminRouter.post('/restream/recheck', async (_req, res) => {
+  forgetRunner();
+  forgetCached();
+  await ensureRunner();
+  const health = restreamHealth();
+  log.info('restream rechecked', { installed: health.installed, version: health.version });
+  res.json({ health });
 });
 
 /* ------------------------------------------------------------------ */

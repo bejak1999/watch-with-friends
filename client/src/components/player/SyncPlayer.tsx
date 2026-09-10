@@ -1,5 +1,5 @@
 import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
-import type { PlaybackState, QueueItem } from '../../lib/api';
+import { api, type PlaybackState, type QueueItem } from '../../lib/api';
 import { createAdapter, type Adapter, type QualityOption } from './adapters';
 import { Icon } from '../ui';
 
@@ -49,6 +49,8 @@ interface Props {
   onNotice: (message: string) => void;
   /** Move the room past an item this browser cannot play. */
   onSkip: () => void;
+  /** Tells the room when this viewer is watching a server-side restream. */
+  onRestreaming: (active: boolean) => void;
   /** Reports the resolutions this source can offer, once they are known. */
   onQualities: (options: QualityOption[], activeId: string) => void;
   /** Whether this source has subtitles at all, so the button can hide. */
@@ -86,6 +88,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     onCaptionsAvailable,
     captionsOn,
     onSkip,
+    onRestreaming,
   },
   ref
 ) {
@@ -93,6 +96,18 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   const adapterRef = useRef<Adapter | null>(null);
   const [ready, setReady] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  /**
+   * Set once a site has refused to be embedded and the server has handed us a
+   * stream instead. Tied to the item id so a stale one is ignored the moment
+   * the track changes, which saves resetting it by hand.
+   */
+  const [restream, setRestream] = useState<{ itemId: string; url: string } | null>(null);
+  const restreamUrl = item && restream && restream.itemId === item.id ? restream.url : null;
+  const askingFor = useRef<string | null>(null);
+
+  useEffect(() => {
+    onRestreaming(Boolean(restreamUrl));
+  }, [restreamUrl, onRestreaming]);
 
   // Latest props read inside intervals without re-creating the player.
   const live = useRef({ playback, serverOffset, armed, volume, muted, item, canControl, captionsOn });
@@ -129,7 +144,12 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     }
 
     const mount = mountRef.current;
-    const adapter = createAdapter(mount, item, {
+    // A restream is played exactly like any other file - the proxy hands back
+    // an .m3u8, so the HTML5 adapter picks hls.js and the quality picker works.
+    const playable: QueueItem = restreamUrl
+      ? { ...item, source: 'direct', sourceId: restreamUrl, url: restreamUrl }
+      : item;
+    const adapter = createAdapter(mount, playable, {
       onReady: () => {
         setReady(true);
         const { playback: pb, serverOffset: off, armed: isArmed, volume: vol, muted: isMuted } = live.current;
@@ -157,7 +177,22 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       onDuration: (seconds) => {
         if (!item.duration || item.duration <= 0) onDuration(item.id, seconds);
       },
-      onError: (message) => {
+      onError: (message, kind) => {
+        // An embed refusal is the one failure worth trying to route around:
+        // ask the server to stream it for us instead of giving up.
+        if (kind === 'embed-refused' && item.source === 'youtube' && askingFor.current !== item.id) {
+          askingFor.current = item.id;
+          void api
+            .post<{ url: string }>('/restream/resolve', { source: item.source, sourceId: item.sourceId })
+            .then((res) => setRestream({ itemId: item.id, url: res.url }))
+            .catch((err) => {
+              // The restream's reason is the useful one - it says whether this
+              // is an age gate, a switched-off feature, or yt-dlp falling over.
+              setLoadError(err instanceof Error ? err.message : message);
+              onError(message);
+            });
+          return;
+        }
         setLoadError(message);
         onError(message);
       },
@@ -171,7 +206,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       if (adapterRef.current === adapter) adapterRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item?.id, item?.source, item?.sourceId]);
+  }, [item?.id, item?.source, item?.sourceId, restreamUrl]);
 
   /* ---- volume / mute ---- */
   useEffect(() => {

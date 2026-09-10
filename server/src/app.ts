@@ -14,6 +14,7 @@ import { uploadsRouter } from './routes/uploads';
 import { adminRouter } from './routes/admin';
 import { avatarRouter } from './routes/avatars';
 import { statsRouter } from './routes/stats';
+import { restreamRouter } from './routes/restream';
 import { initRealtime } from './realtime';
 import { sweepExpired } from './services/rateLimit';
 import { createLogger, currentLogLevel } from './services/logger';
@@ -91,6 +92,7 @@ app.use('/api/uploads', uploadsRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/users', avatarRouter);
 app.use('/api/stats', statsRouter);
+app.use('/api/restream', restreamRouter);
 
 app.use('/api', (_req, res) => {
   res.status(404).json({ error: 'Unknown endpoint' });
