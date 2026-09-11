@@ -157,9 +157,23 @@ export function restreamHealth(): RestreamHealth {
 /* Resolving                                                           */
 /* ------------------------------------------------------------------ */
 
-function classify(stderr: string): { kind: RestreamFailure; message: string } {
+/**
+ * Reasons YouTube gives for an age gate, taken verbatim from yt-dlp's own
+ * AGE_GATE_REASONS rather than guessed - it is the list that actually decides
+ * the outcome upstream, so ours should not drift from it.
+ */
+const AGE_GATE = /confirm your age|age-restricted|inappropriate|age_verification_required|age_check_required/;
+
+/**
+ * Turn yt-dlp's stderr into something worth showing a person. Exported so the
+ * mapping can be tested against real yt-dlp output without a live video - age
+ * gates in particular are awkward to reproduce on demand.
+ */
+export function classify(stderr: string): { kind: RestreamFailure; message: string } {
   const s = stderr.toLowerCase();
-  if (/confirm your age|age-restricted|inappropriate for some/.test(s)) {
+  // Checked before the bot check on purpose: "Sign in to confirm your age"
+  // matches both, and the age gate is the more specific, more useful answer.
+  if (AGE_GATE.test(s)) {
     return {
       kind: 'age',
       message:
