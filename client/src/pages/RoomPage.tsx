@@ -354,7 +354,10 @@ export function RoomPage() {
                 <Icon name="sync" size={12} /> Restream via server
               </div>
             )}
-            {waitingForBuffer && armed && (
+            {/* A room that is playing is by definition not waiting - the server
+                pauses in the same step it announces a wait. So never show the
+                banner over a playing room, whatever the last event said. */}
+            {waitingForBuffer && armed && !playback.isPlaying && (
               <div className="pill" style={{ height: 26 }}>
                 <span className="spinner" style={{ width: 11, height: 11, borderWidth: 1.5 }} />
                 Waiting for everyone…

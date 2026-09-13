@@ -364,7 +364,7 @@ function selectItem(roomId: string, itemId: string | null, autoplay: boolean) {
   }
   markPlayed(itemId);
   lastAdvance.set(roomId, Date.now());
-  autoPaused.set(roomId, false);
+  endWait(roomId);
   emitPlayback(roomId);
   broadcastQueue(roomId);
 }
@@ -433,6 +433,19 @@ function reconcileBuffering(roomId: string) {
   }
 
   if (!anyBuffering && wasAutoPaused) resumeAfterWait(roomId);
+}
+
+/**
+ * Every way out of a wait has to say so. The banner is driven by sync:waiting,
+ * and only resumeAfterWait used to send the all-clear - so a host pressing
+ * play, pause or skipping during a wait left "Waiting for everyone" on every
+ * screen while the room played on perfectly in sync.
+ */
+function endWait(roomId: string): void {
+  const was = autoPaused.get(roomId) === true;
+  autoPaused.set(roomId, false);
+  waitingSince.delete(roomId);
+  if (was) io?.to(`room:${roomId}`).emit('sync:waiting', { waiting: false });
 }
 
 function resumeAfterWait(roomId: string) {
@@ -633,7 +646,7 @@ export function initRealtime(httpServer: HttpServer): Server {
       }
       const pos = typeof payload?.position === 'number' ? payload.position : projectedPosition(room);
       writePlayback(room.id, { isPlaying: true, position: pos });
-      autoPaused.set(room.id, false);
+      endWait(room.id);
       emitPlayback(room.id);
     });
 
@@ -642,7 +655,7 @@ export function initRealtime(httpServer: HttpServer): Server {
       const room = currentRoom()!;
       const pos = typeof payload?.position === 'number' ? payload.position : projectedPosition(room);
       writePlayback(room.id, { isPlaying: false, position: pos });
-      autoPaused.set(room.id, false);
+      endWait(room.id);
       emitPlayback(room.id);
     });
 
@@ -650,7 +663,11 @@ export function initRealtime(httpServer: HttpServer): Server {
       if (!guard('control')) return;
       const room = currentRoom()!;
       const pos = Math.max(0, Number(payload?.position) || 0);
-      writePlayback(room.id, { position: pos, isPlaying: payload?.play ?? room.is_playing === 1 });
+      const playing = payload?.play ?? room.is_playing === 1;
+      writePlayback(room.id, { position: pos, isPlaying: playing });
+      // Seeking into playback overrides a wait exactly like pressing play. A
+      // seek that leaves the room paused lets the wait carry on.
+      if (playing) endWait(room.id);
       emitPlayback(room.id);
     });
 
