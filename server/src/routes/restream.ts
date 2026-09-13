@@ -12,7 +12,7 @@
 
 import { Router } from 'express';
 import crypto from 'crypto';
-import { Readable } from 'stream';
+import { Readable, pipeline } from 'stream';
 import { z } from 'zod';
 import { config } from '../config';
 import { getSettingBool, getSettingNumber } from '../db';
@@ -131,11 +131,19 @@ const UPSTREAM_HEADERS = {
   accept: '*/*',
 };
 
-async function fetchUpstream(url: string, extra: Record<string, string> = {}): Promise<Response> {
+async function fetchUpstream(
+  url: string,
+  extra: Record<string, string> = {},
+  signal?: AbortSignal
+): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
-    return await fetch(url, { headers: { ...UPSTREAM_HEADERS, ...extra }, signal: controller.signal, redirect: 'follow' });
+    return await fetch(url, {
+      headers: { ...UPSTREAM_HEADERS, ...extra },
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+      redirect: 'follow',
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -149,9 +157,37 @@ function absolute(line: string, base: string): string {
   }
 }
 
+interface Rendition {
+  tag: string;
+  url: string;
+  height: number;
+  codecs: string;
+  bandwidth: number;
+  order: number;
+}
+
 /**
- * Rewrite the master playlist: drop renditions taller than the admin's cap, and
- * point everything that is left back at us.
+ * YouTube lists most heights several times: once as H.264, once as VP9, and the
+ * smallest ones again with a second, weaker audio track. hls.js offers each as
+ * its own level, which is where "144p, 144p, 144p" in the picker came from.
+ * Keep one per height - H.264 first, because every browser decodes it cheaply,
+ * then real AAC over the HE-AAC variant, then the higher bitrate.
+ */
+function pickOnePerHeight(renditions: Rendition[]): Rendition[] {
+  const score = (r: Rendition) => (/avc1/i.test(r.codecs) ? 4 : 0) + (/mp4a\.40\.2/i.test(r.codecs) ? 2 : 0);
+  const best = new Map<number, Rendition>();
+  for (const r of renditions) {
+    const current = best.get(r.height);
+    if (!current || score(r) > score(current) || (score(r) === score(current) && r.bandwidth > current.bandwidth)) {
+      best.set(r.height, r);
+    }
+  }
+  return [...best.values()].sort((a, b) => a.order - b.order);
+}
+
+/**
+ * Rewrite the master playlist: one rendition per height, drop the ones taller
+ * than the admin's cap, and point everything that is left back at us.
  *
  * The cap is applied here rather than in the browser on purpose - a viewer
  * cannot opt back into 4K and saturate the uplink, because the higher rungs
@@ -159,39 +195,55 @@ function absolute(line: string, base: string): string {
  */
 function rewriteMaster(body: string, base: string, maxHeight: number): string {
   const lines = body.split(/\r?\n/);
-  const out: string[] = [];
-  const kept: Array<{ height: number; at: number }> = [];
+  const header: string[] = [];
+  const renditions: Rendition[] = [];
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-
     if (line.startsWith('#EXT-X-STREAM-INF')) {
-      const url = lines[i + 1] ?? '';
       const res = /RESOLUTION=(\d+)x(\d+)/.exec(line);
-      const height = res ? Number(res[2]) : 0;
-      i += 1; // the URL line belongs to this tag either way
-      if (maxHeight > 0 && height > maxHeight) continue;
-      kept.push({ height, at: out.length });
-      out.push(line);
-      out.push(proxyPath('variant', absolute(url.trim(), base)));
+      renditions.push({
+        tag: line,
+        url: (lines[i + 1] ?? '').trim(),
+        height: res ? Number(res[2]) : 0,
+        codecs: /CODECS="([^"]*)"/.exec(line)?.[1] ?? '',
+        bandwidth: Number(/BANDWIDTH=(\d+)/.exec(line)?.[1] ?? 0),
+        order: renditions.length,
+      });
+      i += 1; // the URL line belongs to this tag
       continue;
     }
-
     if (line.startsWith('#EXT-X-MEDIA') && line.includes('URI="')) {
-      out.push(
-        line.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${proxyPath('variant', absolute(uri, base))}"`)
-      );
+      header.push(line.replace(/URI="([^"]+)"/, (_m, uri) => `URI="${proxyPath('variant', absolute(uri, base))}"`));
       continue;
     }
-
-    out.push(line);
+    if (line.trim()) header.push(line);
   }
 
+  const unique = pickOnePerHeight(renditions);
+
+  // Keep the ladder on one audio track. YouTube hangs its smallest rung on a
+  // weaker HE-AAC track and everything else on AAC, so switching quality made
+  // the player swap audio tracks mid-stream. One 144p is not worth that.
+  const groupOf = (r: Rendition) => /(?:^|[:,])AUDIO="([^"]*)"/.exec(r.tag)?.[1] ?? '';
+  const counts = new Map<string, number>();
+  for (const r of unique) counts.set(groupOf(r), (counts.get(groupOf(r)) ?? 0) + 1);
+  const mainGroup = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+  const sameAudio = unique.filter((r) => groupOf(r) === mainGroup);
+  const ladder = sameAudio.length > 0 ? sameAudio : unique;
+
+  let kept = maxHeight > 0 ? ladder.filter((r) => r.height <= maxHeight) : ladder;
   // A cap below the lowest rung would otherwise leave nothing to play at all.
-  if (maxHeight > 0 && kept.length === 0) {
+  if (kept.length === 0 && ladder.length > 0) {
     log.warn('cap removed every rendition, falling back to the smallest', { maxHeight });
-    return rewriteMaster(body, base, 0);
+    kept = [ladder.reduce((a, b) => (a.height <= b.height ? a : b))];
   }
+  // Drop the audio track nothing references any more, so the player cannot
+  // start on it by default.
+  const out = header.filter(
+    (l) => !(mainGroup && l.startsWith('#EXT-X-MEDIA') && /TYPE=AUDIO/.test(l) && !l.includes(`GROUP-ID="${mainGroup}"`))
+  );
+  for (const r of kept) out.push(r.tag, proxyPath('variant', absolute(r.url, base)));
   return out.join('\n');
 }
 
@@ -258,19 +310,42 @@ restreamRouter.get('/variant.m3u8', requireAuth, async (req, res) => {
   }
 });
 
-/** Raw bytes: segments, and whole files when there is no HLS ladder. */
+/** A segment that stops sending for this long is abandoned, not waited on forever. */
+const SEG_IDLE_MS = 20000;
+
+/**
+ * Raw bytes: segments, and whole files when there is no HLS ladder.
+ *
+ * The upstream download is tied to the viewer's request. hls.js abandons
+ * requests constantly - every seek and every quality switch - and the old
+ * plain pipe kept pulling from Google after the browser had gone, holding a
+ * connection open on this server each time. A stalled upstream also hung
+ * forever, because the timeout only ever covered the response headers.
+ */
 restreamRouter.get('/seg', requireAuth, async (req, res) => {
   const url = unwrap('seg', req.query.u, req.query.s);
   if (!url) {
     res.status(403).type('text/plain').send('bad signature');
     return;
   }
+
+  const controller = new AbortController();
+  res.on('close', () => controller.abort());
+  let idle: NodeJS.Timeout | undefined;
+  const touch = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => controller.abort(), SEG_IDLE_MS);
+  };
+
   try {
+    touch();
     // Seeking a progressive file is a Range request, so it has to be passed on.
     const range = req.headers.range;
-    const upstream = await fetchUpstream(url, range ? { range } : {});
+    const upstream = await fetchUpstream(url, range ? { range } : {}, controller.signal);
     if (!upstream.ok && upstream.status !== 206) {
-      res.status(upstream.status === 403 ? 410 : 502)
+      clearTimeout(idle);
+      res
+        .status(upstream.status === 403 ? 410 : 502)
         .type('text/plain')
         .send(`upstream said ${upstream.status}`);
       return;
@@ -282,11 +357,20 @@ restreamRouter.get('/seg', requireAuth, async (req, res) => {
     }
     res.setHeader('Cache-Control', 'private, max-age=300');
     if (!upstream.body) {
+      clearTimeout(idle);
       res.end();
       return;
     }
-    Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
+    const body = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
+    body.on('data', touch);
+    // pipeline, not pipe: when either side closes early it tears down the other.
+    pipeline(body, res, (err) => {
+      clearTimeout(idle);
+      if (err && !controller.signal.aborted) log.debug('segment stream ended early', { message: err.message });
+    });
   } catch (err) {
+    clearTimeout(idle);
+    if (controller.signal.aborted) return; // the viewer left or it stalled - nothing to answer
     log.warn('segment fetch failed', { message: err instanceof Error ? err.message : String(err) });
     if (!res.headersSent) res.status(502).type('text/plain').send('could not reach the stream');
   }

@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import { api, type PlaybackState, type QueueItem } from '../../lib/api';
-import { createAdapter, type Adapter, type QualityOption } from './adapters';
+import { createAdapter, type Adapter, type AudioInfo, type QualityOption } from './adapters';
 import { Icon } from '../ui';
 
 /** Where a viewer can watch this themselves when the embed is refused. */
@@ -25,6 +25,9 @@ export interface SyncPlayerHandle {
   /** Drift against the room clock, in seconds. Positive means we are ahead. */
   getDrift(): number;
   isReady(): boolean;
+  /** Turn sound back on after the browser blocked it. Call it from a click. */
+  unmute(): void;
+  getAudioInfo(): AudioInfo | null;
 }
 
 interface Props {
@@ -51,6 +54,8 @@ interface Props {
   onSkip: () => void;
   /** Tells the room when this viewer is watching a server-side restream. */
   onRestreaming: (active: boolean) => void;
+  /** The browser refused sound and the player fell back to muted. */
+  onSoundBlocked: (blocked: boolean) => void;
   /** Reports the resolutions this source can offer, once they are known. */
   onQualities: (options: QualityOption[], activeId: string) => void;
   /** Whether this source has subtitles at all, so the button can hide. */
@@ -89,6 +94,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     captionsOn,
     onSkip,
     onRestreaming,
+    onSoundBlocked,
   },
   ref
 ) {
@@ -130,6 +136,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     setLoadError(null);
     onQualities([], 'auto');
     onCaptionsAvailable(false);
+    onSoundBlocked(false);
     driftRef.current = 0;
     lastSample.current = null;
     stalledSince.current = 0;
@@ -198,6 +205,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       },
       onQualities: (options, activeId) => onQualities(options, activeId),
       onCaptionsAvailable: (available) => onCaptionsAvailable(available),
+      onSoundBlocked: (blocked) => onSoundBlocked(blocked),
     });
 
     adapterRef.current = adapter;
@@ -399,6 +407,8 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       getBuffered: () => adapterRef.current?.getBuffered?.() ?? 0,
       getDrift: () => driftRef.current,
       isReady: () => Boolean(adapterRef.current?.ready),
+      unmute: () => adapterRef.current?.unmute?.(),
+      getAudioInfo: () => adapterRef.current?.getAudioInfo?.() ?? null,
     }),
     []
   );

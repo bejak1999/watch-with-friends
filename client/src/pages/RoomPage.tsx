@@ -63,6 +63,8 @@ export function RoomPage() {
   const [debugOpen, setDebugOpen] = useState(false);
   /** True while this viewer's picture is coming through the server, not the site. */
   const [restreaming, setRestreaming] = useState(false);
+  /** The browser refused sound, so the player is muted until someone clicks. */
+  const [soundBlocked, setSoundBlocked] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   /** Fullscreen has no chrome of its own, so the bar rides on the picture. */
   const [chromeVisible, setChromeVisible] = useState(true);
@@ -310,6 +312,7 @@ export function RoomPage() {
             onNotice={onNotice}
             onSkip={() => actions.next()}
             onRestreaming={setRestreaming}
+            onSoundBlocked={setSoundBlocked}
           />
 
           {/* Keeps clicks from reaching the embedded player so the room stays authoritative. */}
@@ -343,6 +346,13 @@ export function RoomPage() {
                 </button>
               </div>
             </div>
+          )}
+
+          {soundBlocked && armed && (
+            // A click is exactly what the browser wants before it allows sound.
+            <button className="sound-blocked" onClick={() => playerRef.current?.unmute()}>
+              <Icon name="mute" size={16} /> The browser blocked the sound - click to turn it on
+            </button>
           )}
 
           <div className="stage-badges">
@@ -816,6 +826,22 @@ function DebugPanel({
     ['Room says', `${playback.isPlaying ? 'playing' : 'paused'} @ ${expected.toFixed(2)}s (rate ${playback.rate}x)`],
     ['This player', `${player.current?.isReady() ? 'ready' : 'loading'} @ ${local.toFixed(2)}s`],
     ['Drift', `${drift >= 0 ? '+' : ''}${drift.toFixed(2)}s ${Math.abs(drift) > 2 ? '(correcting)' : '(in sync)'}`],
+    [
+      'Sound',
+      (() => {
+        const a = player.current?.getAudioInfo();
+        if (!a) return 'the player does not report this';
+        const flow =
+          a.audioBytes !== null
+            ? `, ${Math.round(a.audioBytes / 1024)} KB decoded`
+            : a.hasAudio !== null
+              ? a.hasAudio
+                ? ', has an audio track'
+                : ', NO audio track'
+              : '';
+        return `${a.muted ? 'MUTED' : 'on'}${flow}`;
+      })(),
+    ],
     [
       'Loaded',
       buffered > 0

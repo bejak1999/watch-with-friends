@@ -17,6 +17,12 @@ export interface AdapterCallbacks {
   /** Fired when the embedded player changed state on its own (user clicked it). */
   onLocalIntent?: (intent: 'play' | 'pause') => void;
   /**
+   * The browser refused to play with sound, so the player fell back to muted.
+   * Reported so the room can offer a click to turn it back on - it used to
+   * happen silently, leaving a picture with no sound and no hint why.
+   */
+  onSoundBlocked?: (blocked: boolean) => void;
+  /**
    * `kind` matters: an embed refusal is the one failure the app can route
    * around, by streaming the video through the server instead.
    */
@@ -48,7 +54,19 @@ export interface Adapter {
   /** Subtitles are personal too. Undefined means the source has none. */
   setCaptions?(enabled: boolean): void;
   readonly supportsCaptions?: boolean;
+  /** Turn sound back on after the browser blocked it. Must run inside a click. */
+  unmute?(): void;
+  /** What the element knows about its sound, for the diagnostics panel. */
+  getAudioInfo?(): AudioInfo;
   destroy(): void;
+}
+
+export interface AudioInfo {
+  muted: boolean;
+  /** Chromium only: audio bytes decoded so far. Rising means sound is flowing. */
+  audioBytes: number | null;
+  /** Firefox only: whether the element has an audio track at all. */
+  hasAudio: boolean | null;
 }
 
 /* ---------------------------------------------------------------- */
@@ -622,6 +640,8 @@ class HtmlAdapter implements Adapter {
   private captionsWanted = false;
   /** Set by play() so a source arriving late still starts playing. */
   private wantsPlay = false;
+  /** Muted by us because the browser refused sound, not by the viewer. */
+  private soundBlocked = false;
   private reportedTrackProblem = false;
 
   private src = '';
@@ -759,11 +779,39 @@ class HtmlAdapter implements Adapter {
     // retried it: the room said "playing" while this tab sat on a black frame
     // until you left and rejoined. Remember the intent and let attach run it.
     if (!this.video.currentSrc && !this.video.src) return;
-    this.video.play().catch(() => {
-      // Autoplay was refused; a muted retry keeps the room in sync visually.
-      this.video.muted = true;
-      this.video.play().catch(() => undefined);
-    });
+    this.video
+      .play()
+      .then(() => {
+        if (!this.soundBlocked) this.cb.onSoundBlocked?.(false);
+      })
+      .catch(() => {
+        // Already muted means the refusal is about something other than sound.
+        if (this.video.muted) return;
+        // Sound was refused - there was no click close enough to this call. Play
+        // muted so the picture stays in sync, but say so rather than hiding it.
+        this.video.muted = true;
+        this.soundBlocked = true;
+        this.video
+          .play()
+          .then(() => this.cb.onSoundBlocked?.(true))
+          .catch(() => undefined);
+      });
+  }
+
+  unmute() {
+    this.soundBlocked = false;
+    this.video.muted = false;
+    this.video.play().catch(() => undefined);
+    this.cb.onSoundBlocked?.(false);
+  }
+
+  getAudioInfo(): AudioInfo {
+    const v = this.video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number; mozHasAudio?: boolean };
+    return {
+      muted: v.muted,
+      audioBytes: typeof v.webkitAudioDecodedByteCount === 'number' ? v.webkitAudioDecodedByteCount : null,
+      hasAudio: typeof v.mozHasAudio === 'boolean' ? v.mozHasAudio : null,
+    };
   }
   pause() { this.wantsPlay = false; this.video.pause(); }
   seek(s: number) { try { this.video.currentTime = s; } catch { /* not seekable yet */ } }

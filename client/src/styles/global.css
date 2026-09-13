@@ -1525,3 +1525,24 @@ img.avatar { object-fit: cover; }
   border-color: transparent;
   font-weight: 650;
 }
+
+/* Sound blocked by the browser: big, central, and one click away. */
+.sound-blocked {
+  position: absolute;
+  left: 50%;
+  bottom: 18%;
+  transform: translateX(-50%);
+  z-index: 7;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(8, 9, 13, 0.85);
+  color: #f2f3f8;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+.sound-blocked:hover { background: rgba(8, 9, 13, 0.95); }
