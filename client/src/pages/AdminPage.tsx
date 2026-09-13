@@ -1254,6 +1254,16 @@ interface RestreamHealth {
   lastErrorKind: string | null;
   consecutiveFailures: number;
   looksBroken: boolean;
+  cookies: {
+    configured: boolean;
+    uploadedAt: number | null;
+    entries: number;
+    signIn: string[];
+    expiresAt: number | null;
+    expired: boolean;
+  };
+  cookiesWorkedAt: number | null;
+  cookiesRejectedAt: number | null;
 }
 
 /** The rungs YouTube actually publishes, plus an explicit "no ceiling". */
@@ -1370,6 +1380,8 @@ function RestreamSection({
         </div>
       )}
 
+      {health && <AgeRestrictedAccount health={health} onChanged={setHealth} />}
+
       <details className="small">
         <summary style={{ cursor: 'pointer' }}>If restreaming stops working</summary>
         <div className="tiny faint" style={{ marginTop: 6, lineHeight: 1.6 }}>
@@ -1383,5 +1395,126 @@ function RestreamSection({
         </div>
       </details>
     </section>
+  );
+}
+
+/**
+ * The only way past YouTube's age gate that still works: a signed-in session
+ * from an account YouTube has confirmed as an adult. Tested - every cookieless
+ * player client fails, and OAuth login is gone.
+ */
+function AgeRestrictedAccount({
+  health,
+  onChanged,
+}: {
+  health: RestreamHealth;
+  onChanged: (h: RestreamHealth) => void;
+}) {
+  const { toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const c = health.cookies;
+
+  const upload = async (file: File) => {
+    setBusy(true);
+    try {
+      const content = await file.text();
+      const res = await api.post<{ health: RestreamHealth }>('/admin/restream/cookies', { content });
+      onChanged(res.health);
+      toast('Account stored - age-restricted videos will retry with it', 'success');
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Could not store that file', 'error');
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  };
+
+  const remove = async () => {
+    if (!confirm('Remove the stored account? Age-restricted videos will stop working.')) return;
+    const res = await api.del<{ health: RestreamHealth }>('/admin/restream/cookies');
+    onChanged(res.health);
+    toast('Account removed', 'success');
+  };
+
+  // Rejected more recently than it last worked means the cookies have gone stale.
+  const stale =
+    c.configured &&
+    (c.expired || (health.cookiesRejectedAt !== null && (health.cookiesWorkedAt ?? 0) < health.cookiesRejectedAt));
+
+  return (
+    <div className="card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div className="row between wrap" style={{ gap: 8 }}>
+        <strong>Age-restricted videos</strong>
+        {c.configured ? (
+          <span className={`tag ${stale ? '' : 'ok'}`}>{stale ? 'Account needs fresh cookies' : '✓ Account stored'}</span>
+        ) : (
+          <span className="tag">Not set up</span>
+        )}
+      </div>
+
+      <div className="form-warning">
+        <strong>Use a separate YouTube account, never your own.</strong> YouTube can restrict or ban accounts it sees
+        being used by tools like this. The account must be one YouTube has confirmed as an adult - signed in is not
+        enough. It is only used when a video is actually age-restricted, never for normal restreams.
+      </div>
+
+      {stale && (
+        <div className="form-error">
+          YouTube refused the stored account{health.cookiesRejectedAt ? ` ${relativeTime(health.cookiesRejectedAt)}` : ''}.
+          Its cookies have expired or been rotated - export a fresh set and upload them again.
+        </div>
+      )}
+
+      {c.configured && (
+        <div className="tiny faint">
+          Stored {c.uploadedAt ? relativeTime(c.uploadedAt) : ''} · {c.entries} cookies · sign-in cookies:{' '}
+          {c.signIn.join(', ') || 'none'}
+          {c.expiresAt ? ` · expires ${new Date(c.expiresAt).toLocaleDateString()}` : ''}
+          {health.cookiesWorkedAt ? ` · last unlocked a video ${relativeTime(health.cookiesWorkedAt)}` : ''}
+        </div>
+      )}
+
+      <details className="small">
+        <summary style={{ cursor: 'pointer' }}>How to export the cookies</summary>
+        <ol className="tiny faint" style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.7 }}>
+          <li>Open a <strong>private / incognito window</strong> and sign in to YouTube with the separate account.</li>
+          <li>
+            In that same tab, go to <code>https://www.youtube.com/robots.txt</code>. Nothing else - no other tabs.
+          </li>
+          <li>
+            Export the cookies for youtube.com as <strong>cookies.txt</strong> (Netscape format), e.g. with the
+            "Get cookies.txt LOCALLY" extension.
+          </li>
+          <li>
+            <strong>Close the private window without signing out.</strong> Signing out, or leaving YouTube open, makes
+            YouTube rotate the cookies and the exported ones stop working.
+          </li>
+          <li>Upload the file here. It is stored readable only by the server, never shown again, and not included in backups.</li>
+        </ol>
+      </details>
+
+      <div className="row wrap" style={{ gap: 8 }}>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".txt,text/plain"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void upload(f);
+          }}
+        />
+        <button className="btn sm" onClick={() => fileRef.current?.click()} disabled={busy}>
+          {busy ? <span className="spinner" /> : <Icon name="upload" size={14} />}{' '}
+          {c.configured ? 'Replace cookies.txt' : 'Upload cookies.txt'}
+        </button>
+        {c.configured && (
+          <button className="btn sm danger" onClick={remove} disabled={busy}>
+            <Icon name="trash" size={14} /> Remove
+          </button>
+        )}
+      </div>
+    </div>
   );
 }

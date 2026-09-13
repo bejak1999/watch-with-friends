@@ -437,9 +437,39 @@ it is always obvious which path a video took.
 > It also **breaks YouTube's terms of service**, which is your call to make on
 > your own server. It is off by default for both reasons.
 
-**Age-restricted videos** mostly do *not* work. YouTube wants a signed-in,
-age-verified account, and restreaming cannot talk its way past that without one.
-When that is the reason, the player says so plainly rather than failing silently.
+### Age-restricted videos
+
+These need one more thing: **the cookies of a YouTube account that YouTube has
+confirmed as an adult.** Admin → Settings → Restream → *Age-restricted videos*.
+
+This was tested before it was built. Against a confirmed age-restricted video,
+every one of yt-dlp's player clients fails without an account — `web`, `mweb`,
+`tv`, `tv_simply`, `web_embedded`, `ios`, `android_vr` and the rest all answer
+"Sign in to confirm your age". OAuth login stopped working in 2024. The old
+embedded-player loophole closed in 2021. Cookies are the only road left.
+
+> [!WARNING]
+> **Use a separate account, never your own.** YouTube can restrict or ban accounts
+> it sees being used by tools like yt-dlp. Being signed in is not enough either —
+> the account has to be one YouTube considers verified as an adult.
+
+How the app handles it:
+
+- The account is **only used when a video is actually age-restricted.** Everything
+  else is fetched anonymously, so the account is not spent on normal restreams.
+- The file is checked on upload — signed-out sessions, expired cookies and files
+  that are not a `cookies.txt` export are refused straight away.
+- It is stored readable only by the server, **never sent back** through the API,
+  kept out of the log, and **not included in backups** — re-upload it after
+  restoring onto a new server.
+- When YouTube stops accepting it, the admin panel says so: the cookies have
+  expired or been rotated, and a fresh export fixes it.
+
+**Exporting the cookies** (from yt-dlp's own guidance): open a private window, sign
+in with the separate account, open `https://www.youtube.com/robots.txt` in that same
+tab, export the youtube.com cookies as `cookies.txt` (e.g. with *Get cookies.txt
+LOCALLY*), then **close the private window without signing out** — signing out or
+keeping YouTube open makes YouTube rotate the cookies and the export stops working.
 
 ### When restreaming stops working
 

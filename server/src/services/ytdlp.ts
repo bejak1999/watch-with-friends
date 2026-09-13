@@ -10,6 +10,7 @@
 
 import { execFile } from 'child_process';
 import { createLogger } from './logger';
+import { cookieStatus, hasCookies, withCookieCopy, type CookieStatus } from './youtubeCookies';
 
 const log = createLogger('restream');
 
@@ -120,6 +121,10 @@ export interface RestreamHealth {
   lastErrorKind: RestreamFailure | null;
   consecutiveFailures: number;
   looksBroken: boolean;
+  /** Whether an age-verified account is stored, and how it has been doing. */
+  cookies: CookieStatus;
+  cookiesWorkedAt: number | null;
+  cookiesRejectedAt: number | null;
 }
 
 const state = {
@@ -128,6 +133,8 @@ const state = {
   lastError: null as string | null,
   lastErrorKind: null as RestreamFailure | null,
   consecutiveFailures: 0,
+  cookiesWorkedAt: null as number | null,
+  cookiesRejectedAt: null as number | null,
 };
 
 /**
@@ -150,6 +157,9 @@ export function restreamHealth(): RestreamHealth {
     lastErrorKind: state.lastErrorKind,
     consecutiveFailures: state.consecutiveFailures,
     looksBroken: looksBroken(),
+    cookies: cookieStatus(),
+    cookiesWorkedAt: state.cookiesWorkedAt,
+    cookiesRejectedAt: state.cookiesRejectedAt,
   };
 }
 
@@ -226,24 +236,59 @@ async function resolveUncached(pageUrl: string, key: string): Promise<RestreamSo
   }
 
   const started = Date.now();
-  let stdout: string;
+  const baseArgs = ['-J', '--no-warnings', '--no-playlist', '--no-progress', '--socket-timeout', '15'];
+
+  const attempt = async (extra: string[]): Promise<string> => {
+    try {
+      const res = await run(r, [...baseArgs, ...extra, pageUrl], 60000);
+      return res.stdout;
+    } catch (err) {
+      const stderr = String((err as { stderr?: string }).stderr || (err as Error).message || '');
+      const verdict = classify(stderr);
+      const detail = stderr.split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 300) || verdict.message;
+      throw new RestreamError(verdict.kind, verdict.message, detail);
+    }
+  };
+
+  let stdout = '';
+  let usedCookies = false;
   try {
-    const res = await run(
-      r,
-      ['-J', '--no-warnings', '--no-playlist', '--no-progress', '--socket-timeout', '15', pageUrl],
-      60000
-    );
-    stdout = res.stdout;
+    try {
+      stdout = await attempt([]);
+    } catch (err) {
+      // Only an age gate is worth spending the account on. Anything else fails
+      // the same way signed in, and every signed-in request is one more thing
+      // for YouTube to hold against that account - so it is not used by default.
+      if (!(err instanceof RestreamError) || err.kind !== 'age' || !hasCookies()) throw err;
+      log.info('age gate - retrying with the stored account', { key });
+      usedCookies = true;
+      stdout = await withCookieCopy((file) => attempt(['--cookies', file]));
+    }
   } catch (err) {
-    const stderr = String((err as { stderr?: string }).stderr || (err as Error).message || '');
-    const verdict = classify(stderr);
+    const e = err instanceof RestreamError ? err : new RestreamError('failed', 'Restreaming failed unexpectedly.');
+    if (e.kind === 'age') {
+      if (usedCookies) {
+        state.cookiesRejectedAt = Date.now();
+        e.message =
+          'YouTube still wants an age check even with the stored account. Its cookies have probably expired, or the ' +
+          'account has not confirmed its age - an admin can upload fresh ones under Admin → Settings → Restream.';
+      } else {
+        e.message =
+          'This video is age-restricted. An admin can store the cookies of an age-verified YouTube account under ' +
+          'Admin → Settings → Restream to unlock these.';
+      }
+    }
     state.lastErrorAt = Date.now();
-    state.lastError = stderr.split('\n').filter(Boolean).slice(-1)[0]?.slice(0, 300) || verdict.message;
-    state.lastErrorKind = verdict.kind;
-    state.consecutiveFailures += 1;
-    log.warn('resolve failed', { key, kind: verdict.kind, ms: Date.now() - started, detail: state.lastError });
-    throw new RestreamError(verdict.kind, verdict.message, state.lastError || undefined);
+    state.lastError = e.detail || e.message;
+    state.lastErrorKind = e.kind;
+    // An age gate or a removed video says nothing about yt-dlp's health. Only
+    // failures that point at yt-dlp itself count, or the "needs updating"
+    // banner would go up after three age-restricted videos in a row.
+    if (e.kind === 'failed' || e.kind === 'botcheck') state.consecutiveFailures += 1;
+    log.warn('resolve failed', { key, kind: e.kind, usedCookies, ms: Date.now() - started, detail: state.lastError });
+    throw e;
   }
+  if (usedCookies) state.cookiesWorkedAt = Date.now();
 
   let info: any;
   try {

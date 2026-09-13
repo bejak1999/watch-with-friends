@@ -13,6 +13,7 @@ import { deleteAvatarFiles } from './avatars';
 import { globalStats } from '../services/stats';
 import { createLogger, currentLogLevel, logsAsText, recentLogs, type LogLevel } from '../services/logger';
 import { ensureRunner, forgetCached, forgetRunner, restreamHealth } from '../services/ytdlp';
+import { CookieFileError, removeCookies, saveCookies } from '../services/youtubeCookies';
 import multer from 'multer';
 import {
   BackupError,
@@ -324,6 +325,39 @@ adminRouter.post('/restream/recheck', async (_req, res) => {
   const health = restreamHealth();
   log.info('restream rechecked', { installed: health.installed, version: health.version });
   res.json({ health });
+});
+
+/**
+ * Store the cookies of an age-verified YouTube account. The content goes in,
+ * only a summary ever comes back out - names of the sign-in cookies, never a
+ * value. Log keys are chosen to avoid the logger's secret filter swallowing
+ * the harmless counts.
+ */
+adminRouter.post('/restream/cookies', (req, res) => {
+  const content = typeof req.body?.content === 'string' ? req.body.content : '';
+  if (!content.trim()) {
+    res.status(400).json({ error: 'That file is empty.' });
+    return;
+  }
+  try {
+    const status = saveCookies(content);
+    forgetCached();
+    log.info('age-verified account stored', { entries: status.entries, signIn: status.signIn.length, by: req.user!.username });
+    res.json({ health: restreamHealth() });
+  } catch (err) {
+    if (err instanceof CookieFileError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    throw err;
+  }
+});
+
+adminRouter.delete('/restream/cookies', (req, res) => {
+  removeCookies();
+  forgetCached();
+  log.info('age-verified account removed', { by: req.user!.username });
+  res.json({ health: restreamHealth() });
 });
 
 /* ------------------------------------------------------------------ */
