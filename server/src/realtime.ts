@@ -100,6 +100,12 @@ const waitingSince = new Map<string, number>();
 const lastAdvance = new Map<string, number>();
 /** roomId -> pending "everyone left" freeze, cancelled if anybody comes back. */
 const emptyRoomTimers = new Map<string, NodeJS.Timeout>();
+/**
+ * roomId -> the queue ran out. The room keeps the last video selected, paused
+ * at its end, which used to look exactly like "something is still playing" -
+ * so a video added afterwards sat there until somebody found the play button.
+ */
+const queueEnded = new Map<string, boolean>();
 
 /**
  * A page reload, a phone locking its screen or a few seconds of bad signal all
@@ -155,6 +161,7 @@ export function forgetRoom(roomId: string): void {
   autoPaused.delete(roomId);
   waitingSince.delete(roomId);
   lastAdvance.delete(roomId);
+  queueEnded.delete(roomId);
 }
 
 /* ------------------------------------------------------------------ */
@@ -354,7 +361,26 @@ function markPlayed(itemId: string | null) {
   db.prepare('UPDATE queue_items SET played_at = ? WHERE id = ? AND played_at IS NULL').run(Date.now(), itemId);
 }
 
+/**
+ * Is the room free to start something new without interrupting anybody? Yes
+ * when nothing is selected, when the queue has run out, or when the selected
+ * video sits finished at its end (which survives a restart, unlike the flag).
+ * A video paused halfway is not idle - somebody paused it on purpose.
+ */
+export function roomIsIdle(roomId: string): boolean {
+  const room = roomById(roomId);
+  if (!room) return false;
+  if (!room.current_item_id) return true;
+  if (room.is_playing === 1) return false;
+  if (queueEnded.get(roomId)) return true;
+  const item = db.prepare('SELECT duration FROM queue_items WHERE id = ?').get(room.current_item_id) as
+    | { duration: number | null }
+    | undefined;
+  return Boolean(item?.duration && item.duration > 0 && room.position >= item.duration - 2);
+}
+
 function selectItem(roomId: string, itemId: string | null, autoplay: boolean) {
+  queueEnded.delete(roomId);
   writePlayback(roomId, { currentItemId: itemId, position: 0, isPlaying: autoplay && Boolean(itemId) });
   if (itemId) {
     const row = db.prepare('SELECT title, source, added_by FROM queue_items WHERE id = ?').get(itemId) as
@@ -374,10 +400,53 @@ function selectItem(roomId: string, itemId: string | null, autoplay: boolean) {
  * playlist is loaded with "continue where we left off", which has to land
  * mid-track rather than at zero like a normal track change.
  */
-export function selectQueueItem(roomId: string, itemId: string, position: number): void {
-  selectItem(roomId, itemId, false);
-  writePlayback(roomId, { position: Math.max(0, position), isPlaying: false });
-  emitPlayback(roomId);
+export function selectQueueItem(roomId: string, itemId: string, position: number, autoplay = true): void {
+  selectItem(roomId, itemId, autoplay);
+  if (position > 0) {
+    writePlayback(roomId, { position, isPlaying: autoplay });
+    emitPlayback(roomId);
+  }
+}
+
+/** Past the end by this much with nobody watching, the room moves on by itself. */
+const OVERRUN_S = 4;
+
+/**
+ * The next video used to start only when a player reported "ended". With no
+ * player able to - a tab still waiting for "Join playback", a throttled
+ * background tab, a player that never fires the event - the room sat past the
+ * end of its video forever. The server knows the duration, so it moves on.
+ *
+ * It only steps in when no viewer is following along: somebody in sync is
+ * trusted to report the end themselves, which also means a stored duration
+ * that is too short can never cut a video off while people watch it.
+ */
+function overranTheEnd(
+  roomId: string,
+  room: { current_item_id: string | null },
+  payload: { position: number; stateAt: number; rate: number }
+): boolean {
+  if (!room.current_item_id) return false;
+  const item = db.prepare('SELECT duration, source FROM queue_items WHERE id = ?').get(room.current_item_id) as
+    | { duration: number | null; source: string }
+    | undefined;
+  if (!item?.duration || item.duration <= 0 || item.source === 'twitch_live') return false;
+  const at = payload.position + ((Date.now() - payload.stateAt) / 1000) * (payload.rate || 1);
+  if (at < item.duration + OVERRUN_S) return false;
+  if (Date.now() - (lastAdvance.get(roomId) ?? 0) < 5000) return false;
+
+  const following = socketsIn(roomId).some((s) => {
+    const st = socketState.get(s);
+    return Boolean(st && Date.now() - st.reportedAt < 6000 && Math.abs(st.reportedPosition - at) < 10);
+  });
+  if (following) return false;
+
+  log.info('moved on - nobody reported the end of the video', {
+    room: roomId,
+    at: Math.round(at),
+    duration: Math.round(item.duration),
+  });
+  return true;
 }
 
 function advance(roomId: string, direction: 1 | -1 = 1) {
@@ -390,6 +459,7 @@ function advance(roomId: string, direction: 1 | -1 = 1) {
 
   if (!target) {
     writePlayback(roomId, { isPlaying: false });
+    queueEnded.set(roomId, true);
     emitPlayback(roomId);
     systemMessageTo(roomId, 'Reached the end of the queue');
     return;
@@ -745,16 +815,19 @@ export function initRealtime(httpServer: HttpServer): Server {
       }
       const room = currentRoom()!;
       const items = parsed.data.items as MediaItem[];
+      // Asked before adding: afterwards the new item itself makes the room look busy.
+      const idle = roomIsIdle(room.id);
 
-      const created = addToQueue(room.id, state.user.id, items, Boolean(parsed.data.atTop));
+      const created = addToQueue(room.id, state.user.id, items, parsed.data.atTop ? 'next' : 'end');
       const label =
         items.length === 1
           ? `${state.user.displayName} added "${items[0].title}"`
           : `${state.user.displayName} added ${items.length} videos`;
       broadcastQueue(room.id, parsed.data.silent ? undefined : label);
 
-      // First thing in an empty room starts playing right away.
-      if (!room.current_item_id && created[0]) selectItem(room.id, created[0].id, false);
+      // Adding to a room that is not playing anything starts it straight away -
+      // it used to be selected paused, which cost everyone an extra press.
+      if (idle && created[0]) selectItem(room.id, created[0].id, true);
     });
 
     socket.on('queue:remove', (payload: { itemId?: string }) => {
@@ -902,15 +975,24 @@ export function initRealtime(httpServer: HttpServer): Server {
       const room = roomById(roomId);
       if (!room || room.is_playing !== 1) continue;
 
-      // Keep the room's playlist bookmark current while it plays, so leaving
-      // mid-episode and coming back tomorrow lands in the right place.
-      if (room.playlist_id && payload && room.current_item_id) {
-        const item = db.prepare('SELECT source, source_id, title FROM queue_items WHERE id = ?').get(
-          room.current_item_id
-        ) as { source: string; source_id: string; title: string } | undefined;
-        if (item) {
+      if (payload && overranTheEnd(roomId, room, payload)) {
+        advance(roomId, 1);
+        continue;
+      }
+
+      // Keep the bookmark of the playlist this video came from current, so
+      // leaving mid-episode and coming back tomorrow lands in the right place.
+      if (payload && room.current_item_id) {
+        const item = db
+          .prepare('SELECT source, source_id, title, playlist_id FROM queue_items WHERE id = ?')
+          .get(room.current_item_id) as
+          | { source: string; source_id: string; title: string; playlist_id: string | null }
+          | undefined;
+        // Rows queued before the per-item column existed fall back to the room's.
+        const playlistId = item?.playlist_id ?? room.playlist_id;
+        if (item && playlistId) {
           recordProgress(
-            room.playlist_id,
+            playlistId,
             { source: item.source, sourceId: item.source_id, title: item.title },
             payload.position + (Date.now() - payload.stateAt) / 1000
           );

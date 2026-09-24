@@ -78,6 +78,7 @@ export interface QueueItemRow {
   added_by: string | null;
   added_at: number;
   played_at: number | null;
+  playlist_id: string | null;
 }
 
 export interface MediaItem {

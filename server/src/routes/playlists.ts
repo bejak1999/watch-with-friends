@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { db } from '../db';
 import { newId, requireAuth } from '../auth';
 import { addToQueue, canQueue, memberRole, queueDTO, roomById } from '../services/rooms';
-import { broadcastQueue, selectQueueItem } from '../realtime';
+import { broadcastQueue, roomIsIdle, selectQueueItem } from '../realtime';
 import { progressFor, progressForMany, resetProgress, setRoomPlaylist } from '../services/playlistProgress';
 import type { MediaItem } from '../types';
 
@@ -346,35 +346,54 @@ playlistsRouter.post('/:id/load-into/:roomId', (req, res) => {
     res.status(400).json({ error: 'That playlist is empty' });
     return;
   }
-  const created = addToQueue(room.id, req.user!.id, items);
-  // From here on this room's playback updates the playlist's bookmark.
-  setRoomPlaylist(room.id, row.id);
-
+  /**
+   * Two ways in, and the difference is whether anything gets interrupted:
+   *   play  - starts now, slotted in right after the current video
+   *   queue - joins the end; only starts by itself if the room was idle
+   * Neither removes anything already queued.
+   */
+  const mode = req.body?.mode === 'play' ? 'play' : 'queue';
   const resume = req.body?.resume === true;
   const saved = progressFor(row.id);
-  let resumedAt: { title: string; position: number } | null = null;
 
+  // Continuing picks up at the bookmarked video and leaves out the ones before
+  // it - there is no point queueing episodes everybody has already seen.
+  let startAt = 0;
+  let toAdd = items;
+  let resumedAt: { title: string; position: number } | null = null;
   if (resume && saved) {
-    // Match on source rather than on the queue id: the queue rows were just
-    // created, so the ids the bookmark knew about are long gone.
-    const target = created.find((q) => q.source === saved.source && q.source_id === saved.sourceId);
-    if (target) {
-      selectQueueItem(room.id, target.id, saved.position);
-      resumedAt = { title: target.title, position: saved.position };
+    const idx = items.findIndex((i) => i.source === saved.source && i.sourceId === saved.sourceId);
+    if (idx >= 0) {
+      toAdd = items.slice(idx);
+      startAt = saved.position;
+      resumedAt = { title: items[idx].title, position: saved.position };
     }
-  } else if (!resume) {
-    // An explicit "start over" is also an instruction to forget the bookmark,
-    // otherwise the next load would offer to resume a position nobody wants.
+  } else if (!resume && mode === 'play') {
+    // Playing from the top is an instruction to forget the bookmark, or the next
+    // visit would offer to resume a position nobody wants any more.
     resetProgress(row.id);
   }
 
+  const idle = roomIsIdle(room.id);
+  // Tagged with the playlist, so its bookmark moves whenever one of these plays -
+  // now or much later, after whatever was queued ahead of it.
+  const created = addToQueue(room.id, req.user!.id, toAdd, mode === 'play' ? 'next' : 'end', row.id);
+  const started = mode === 'play' || idle;
+  if (started && created[0]) {
+    setRoomPlaylist(room.id, row.id);
+    selectQueueItem(room.id, created[0].id, startAt, true);
+  }
+
+  const who = req.user!.displayName;
   broadcastQueue(
     room.id,
-    resumedAt
-      ? `${req.user!.displayName} loaded "${row.name}" and picked up at ${formatClock(resumedAt.position)} of "${resumedAt.title}"`
-      : `${req.user!.displayName} loaded playlist "${row.name}" (${items.length} videos)`
+    started && resumedAt
+      ? `${who} continued "${row.name}" at ${formatClock(resumedAt.position)} of "${resumedAt.title}"`
+      : started
+        ? `${who} started playlist "${row.name}" (${toAdd.length} videos)`
+        : `${who} queued playlist "${row.name}" (${toAdd.length} videos)`
   );
-  res.json({ ok: true, added: items.length, resumed: resumedAt });
+  res.json({ ok: true, added: toAdd.length, started, resumed: resumedAt });
 });
 
 function formatClock(seconds: number): string {

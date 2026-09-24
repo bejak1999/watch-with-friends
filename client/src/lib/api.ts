@@ -102,6 +102,8 @@ export interface QueueItem extends MediaItem {
   addedByName: string | null;
   addedAt: number;
   playedAt: number | null;
+  /** The playlist this was loaded from, if any. */
+  playlistId: string | null;
 }
 
 export interface User {

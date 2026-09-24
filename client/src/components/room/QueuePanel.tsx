@@ -149,7 +149,7 @@ export function QueuePanel({
               </div>
 
               <div className="grow" style={{ minWidth: 0 }}>
-                <div className="q-title clamp2">{item.title}</div>
+                <div className="q-title clamp3">{item.title}</div>
                 <div className="q-meta truncate">
                   {sourceLabel(item.source)}
                   {item.addedByName ? ` · ${item.addedByName}` : ''}

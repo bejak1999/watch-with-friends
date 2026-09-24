@@ -80,19 +80,18 @@ export function recordProgress(
       db.prepare('SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id = ?').get(playlistId) as { n: number }
     ).n;
 
-    // "3 of 12" reads better than a raw id. An item played from a hand-built
-    // queue rather than the playlist itself simply has no index.
+    // "3 of 12" reads better than a raw id.
     const hit = db
       .prepare('SELECT MIN(sort) AS sort FROM playlist_items WHERE playlist_id = ? AND source = ? AND source_id = ?')
       .get(playlistId, item.source, item.sourceId) as { sort: number | null };
-    const index =
-      hit.sort == null
-        ? 0
-        : (
-            db
-              .prepare('SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id = ? AND sort <= ?')
-              .get(playlistId, hit.sort) as { n: number }
-          ).n;
+    // A video queued by hand while the playlist was loaded is not part of it,
+    // and must not overwrite where the group actually got to.
+    if (hit.sort == null) return;
+    const index = (
+      db
+        .prepare('SELECT COUNT(*) AS n FROM playlist_items WHERE playlist_id = ? AND sort <= ?')
+        .get(playlistId, hit.sort) as { n: number }
+    ).n;
 
     db.prepare(
       `INSERT INTO playlist_progress

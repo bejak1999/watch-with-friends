@@ -216,6 +216,13 @@ MIGRATIONS.push((d) => {
   `);
 });
 
+MIGRATIONS.push((d) => {
+  // Each queued video remembers which playlist it came from, so the right
+  // bookmark moves while it plays. The room-wide column only held one, and a
+  // second playlist queued behind the first stole its bookmark.
+  d.exec(`ALTER TABLE queue_items ADD COLUMN playlist_id TEXT;`);
+});
+
 export function migrate(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {

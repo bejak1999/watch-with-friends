@@ -15,6 +15,8 @@ export interface QueueItemDTO {
   addedByName: string | null;
   addedAt: number;
   playedAt: number | null;
+  /** The playlist this was loaded from, if any. */
+  playlistId: string | null;
 }
 
 export interface RoomSummary {
@@ -119,6 +121,7 @@ export function queueDTO(roomId: string): QueueItemDTO[] {
     addedByName: r.added_by_name,
     addedAt: r.added_at,
     playedAt: r.played_at,
+    playlistId: r.playlist_id ?? null,
   }));
 }
 
@@ -127,18 +130,51 @@ function nextSort(roomId: string): number {
   return (row.m ?? 0) + 1;
 }
 
-export function addToQueue(roomId: string, userId: string, items: MediaItem[], atTop = false): QueueItemRow[] {
+/**
+ * Where new items go. 'next' means directly after whatever is playing, which is
+ * what "Play next" promises. It used to mean the top of the whole queue, ahead
+ * of items already played - so a "Play next" video was skipped over and only
+ * came round again if the queue looped.
+ */
+export type Placement = 'end' | 'next';
+
+export function addToQueue(
+  roomId: string,
+  userId: string,
+  items: MediaItem[],
+  placement: Placement | boolean = 'end',
+  playlistId: string | null = null
+): QueueItemRow[] {
+  const where: Placement = placement === true || placement === 'next' ? 'next' : 'end';
   const now = Date.now();
   const created: QueueItemRow[] = [];
 
   const tx = db.transaction(() => {
     let sort: number;
     let step = 1;
-    if (atTop) {
+    const current =
+      where === 'next'
+        ? (db
+            .prepare(
+              `SELECT q.sort FROM rooms r JOIN queue_items q ON q.id = r.current_item_id
+                WHERE r.id = ? AND q.room_id = r.id`
+            )
+            .get(roomId) as { sort: number } | undefined)
+        : undefined;
+
+    if (where === 'next' && current) {
+      // Fit the batch into the gap between what is playing and what follows it.
+      const following = db
+        .prepare('SELECT MIN(sort) AS m FROM queue_items WHERE room_id = ? AND sort > ?')
+        .get(roomId, current.sort) as { m: number | null };
+      const ceiling = following.m ?? current.sort + items.length + 1;
+      step = (ceiling - current.sort) / (items.length + 1);
+      sort = current.sort + step;
+    } else if (where === 'next') {
+      // Nothing playing: "next" is simply the front of the queue.
       const first = db.prepare('SELECT MIN(sort) AS m FROM queue_items WHERE room_id = ?').get(roomId) as {
         m: number | null;
       };
-      // Fit the batch into the gap before the current head.
       const head = first.m ?? 1;
       step = 1 / (items.length + 1);
       sort = head - 1 + step;
@@ -149,8 +185,8 @@ export function addToQueue(roomId: string, userId: string, items: MediaItem[], a
     for (const item of items) {
       const id = newId();
       db.prepare(
-        `INSERT INTO queue_items (id, room_id, sort, source, source_id, url, title, author, duration, thumbnail, added_by, added_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO queue_items (id, room_id, sort, source, source_id, url, title, author, duration, thumbnail, added_by, added_at, playlist_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         roomId,
@@ -163,7 +199,8 @@ export function addToQueue(roomId: string, userId: string, items: MediaItem[], a
         item.duration ?? null,
         item.thumbnail ?? null,
         userId,
-        now
+        now,
+        playlistId
       );
       created.push(db.prepare('SELECT * FROM queue_items WHERE id = ?').get(id) as QueueItemRow);
       sort += step;

@@ -44,7 +44,15 @@ export function RoomPage() {
   const stageRef = useRef<HTMLDivElement>(null);
 
   const [tab, setTab] = useState<Tab>('queue');
-  const [armed, setArmed] = useState(false);
+  /**
+   * Browsers only allow sound after the viewer has interacted with the page.
+   * Anyone who got here by clicking - the room list, an "Add" button - already
+   * has, so there is nothing to ask them. Only a cold page load (an invite link,
+   * a refresh) still shows "Join playback", because only then is a click needed.
+   */
+  const [armed, setArmed] = useState(() =>
+    Boolean((navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive)
+  );
   const [adding, setAdding] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [volume, setVolume] = useState(() => Number(localStorage.getItem('wwf.volume') ?? 0.8));
@@ -69,6 +77,18 @@ export function RoomPage() {
   /** Fullscreen has no chrome of its own, so the bar rides on the picture. */
   const [chromeVisible, setChromeVisible] = useState(true);
   const hideChromeAt = useRef<number>(0);
+
+  // Any click or key press counts as the go-ahead - no need to find the one button.
+  useEffect(() => {
+    if (armed) return;
+    const arm = () => setArmed(true);
+    window.addEventListener('pointerdown', arm, true);
+    window.addEventListener('keydown', arm, true);
+    return () => {
+      window.removeEventListener('pointerdown', arm, true);
+      window.removeEventListener('keydown', arm, true);
+    };
+  }, [armed]);
 
   const canControl = room?.permissions.canControl ?? false;
   const canQueue = room?.permissions.canQueue ?? false;
@@ -200,8 +220,13 @@ export function RoomPage() {
       return;
     }
     setArmed(true);
-    if (playback.isPlaying) actions.pause(currentPosition());
-    else actions.play(currentPosition());
+    if (playback.isPlaying) {
+      actions.pause(currentPosition());
+      return;
+    }
+    // Play on a video that has finished means "again", not "the last second".
+    const at = currentPosition();
+    actions.play(duration > 0 && at >= duration - 1 ? 0 : at);
   };
 
   const toggleFullscreen = () => {
@@ -474,6 +499,21 @@ export function RoomPage() {
 
         {/* ---- controls ---- */}
         <div className="controls">
+          {/* Its own line at full width: squeezed between the buttons it only
+              ever got ~150px. The whole title still shows on hover if cut. */}
+          {currentItem && (
+            <div className="now-playing">
+              <span className="truncate" style={{ fontWeight: 600, fontSize: '0.9rem', minWidth: 0 }}>
+                {currentItem.title}
+              </span>
+              <span className="tag">{sourceLabel(currentItem.source)}</span>
+              {currentItem.addedByName && (
+                <span className="tiny faint hide-sm" style={{ flex: 'none' }}>
+                  added by {currentItem.addedByName}
+                </span>
+              )}
+            </div>
+          )}
           <Scrubber
             progress={progress}
             loaded={loaded}
@@ -506,17 +546,6 @@ export function RoomPage() {
               <span className="mono tiny faint" style={{ marginLeft: 8, whiteSpace: 'nowrap' }}>
                 {formatTime(displayPosition)} / {formatTime(duration)}
               </span>
-            </div>
-
-            <div className="now-playing grow" style={{ justifyContent: 'center' }}>
-              {currentItem && (
-                <>
-                  <span className="truncate small" style={{ fontWeight: 550, maxWidth: 320 }}>
-                    {currentItem.title}
-                  </span>
-                  <span className="tag">{sourceLabel(currentItem.source)}</span>
-                </>
-              )}
             </div>
 
             <div className="row secondary-controls" style={{ gap: 4 }}>
@@ -664,7 +693,9 @@ export function RoomPage() {
               roomId={room.id}
               queue={queue}
               canQueue={canQueue}
-              activePlaylistId={room.playlistId}
+              activePlaylistId={currentItem?.playlistId ?? room.playlistId}
+              roomBusy={Boolean(currentItem) && playback.isPlaying}
+              onStarting={() => setArmed(true)}
             />
           )}
           {tab === 'chat' && (

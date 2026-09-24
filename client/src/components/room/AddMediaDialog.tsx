@@ -84,7 +84,7 @@ function ItemRow({
         {item.duration ? <span className="dur">{formatTime(item.duration)}</span> : null}
       </div>
       <div className="grow" style={{ minWidth: 0 }}>
-        <div className="clamp2" style={{ fontSize: '0.87rem', fontWeight: 550 }}>{item.title}</div>
+        <div className="clamp3" style={{ fontSize: '0.87rem', fontWeight: 550 }}>{item.title}</div>
         <div className="tiny faint truncate">
           {sourceLabel(item.source)}
           {item.author ? ` · ${item.author}` : ''}
@@ -578,17 +578,22 @@ function LibraryTab({ roomId, onDone }: { roomId: string; onDone: () => void }) 
       .catch(() => setPlaylists([]));
   }, []);
 
-  const load = async (id: string, resume: boolean) => {
+  // 'play' starts it now (after whatever is on); 'queue' only appends it and
+  // starts it only if nothing else is playing.
+  const load = async (id: string, mode: 'play' | 'queue', resume: boolean) => {
     setBusyId(id);
     try {
-      const res = await api.post<{ added: number; resumed: { title: string; position: number } | null }>(
-        `/playlists/${id}/load-into/${roomId}`,
-        { resume }
-      );
+      const res = await api.post<{
+        added: number;
+        started: boolean;
+        resumed: { title: string; position: number } | null;
+      }>(`/playlists/${id}/load-into/${roomId}`, { mode, resume });
       toast(
         res.resumed
           ? `Picked up at ${formatTime(res.resumed.position)} of "${res.resumed.title}"`
-          : `Added ${res.added} videos to the queue`,
+          : res.started
+            ? `Playing - ${res.added} videos`
+            : `Added ${res.added} videos to the end of the queue`,
         'success'
       );
       onDone();
@@ -627,7 +632,7 @@ function LibraryTab({ roomId, onDone }: { roomId: string; onDone: () => void }) 
             {p.cover ? <img src={p.cover} alt="" loading="lazy" /> : <span>📁</span>}
           </div>
           <div className="grow" style={{ minWidth: 0 }}>
-            <div className="truncate" style={{ fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</div>
+            <div className="clamp2" style={{ fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</div>
             <div className="tiny faint">
               {p.itemCount} videos{!p.mine && p.ownerName ? ` · from ${p.ownerName}` : ''}
             </div>
@@ -641,14 +646,14 @@ function LibraryTab({ roomId, onDone }: { roomId: string; onDone: () => void }) 
           <div className="row" style={{ gap: 4, flex: 'none' }}>
             {p.progress ? (
               <>
-                <button className="btn sm primary" onClick={() => load(p.id, true)} disabled={busyId === p.id}>
+                <button className="btn sm primary" onClick={() => load(p.id, 'play', true)} disabled={busyId === p.id}>
                   {busyId === p.id ? <span className="spinner" /> : 'Continue'}
                 </button>
                 <button
                   className="btn sm"
-                  onClick={() => load(p.id, false)}
+                  onClick={() => load(p.id, 'play', false)}
                   disabled={busyId === p.id}
-                  title="Load it and start from the first video"
+                  title="Play it from the first video"
                 >
                   Start over
                 </button>
@@ -661,9 +666,19 @@ function LibraryTab({ roomId, onDone }: { roomId: string; onDone: () => void }) 
                 </button>
               </>
             ) : (
-              <button className="btn sm primary" onClick={() => load(p.id, false)} disabled={busyId === p.id}>
-                {busyId === p.id ? <span className="spinner" /> : 'Load'}
-              </button>
+              <>
+                <button className="btn sm primary" onClick={() => load(p.id, 'play', false)} disabled={busyId === p.id}>
+                  {busyId === p.id ? <span className="spinner" /> : 'Play'}
+                </button>
+                <button
+                  className="btn sm"
+                  onClick={() => load(p.id, 'queue', false)}
+                  disabled={busyId === p.id}
+                  title="Add it to the end of the queue"
+                >
+                  Queue
+                </button>
+              </>
             )}
           </div>
         </div>

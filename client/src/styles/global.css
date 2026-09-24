@@ -304,10 +304,13 @@ img { display: block; max-width: 100%; }
 .tiny { font-size: 0.74rem; }
 .mono { font-family: var(--mono); }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.clamp2 {
+.clamp2,
+.clamp3 {
   display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2;
   -webkit-box-orient: vertical; overflow: hidden;
 }
+/* Video titles: long YouTube titles get a third line before the "…". */
+.clamp3 { -webkit-line-clamp: 3; line-clamp: 3; }
 .center { display: grid; place-items: center; }
 .spread { flex: 1; }
 
@@ -676,7 +679,7 @@ img.avatar { object-fit: cover; }
    * The subtrahend is the chrome around the stage: control bar, room header,
    * padding.
    */
-  width: min(100%, calc((100vh - 190px) * 16 / 9));
+  width: min(100%, calc((100vh - 216px) * 16 / 9));
   margin-inline: auto;
 }
 /* Full-bleed once the queue and chat are folded away. */
@@ -790,11 +793,8 @@ img.avatar { object-fit: cover; }
 .control-row { flex-wrap: wrap; row-gap: 8px; }
 .control-row .transport { flex: 0 0 auto; }
 .control-row .secondary-controls { flex: 0 0 auto; margin-left: auto; }
-/* A real flex-basis, not 0: with a basis of 0 this block silently collapses to
-   a few pixels and its own children spill over the transport row instead of
-   pushing the buttons onto a second line. Below 150px it is useless anyway. */
-.control-row .now-playing { flex: 1 1 150px; overflow: hidden; }
-.control-row .now-playing .tag { flex: 0 0 auto; }
+.controls .now-playing { padding: 0 2px; }
+.controls .now-playing .tag { flex: 0 0 auto; }
 
 /* ---------------------------------------------------------------- */
 /* Side panel (queue / chat / people)                                */
@@ -1214,7 +1214,6 @@ img.avatar { object-fit: cover; }
 /* Phone-sized control bar: wrap to a second line rather than clipping. */
 @media (max-width: 760px) {
   .hide-sm { display: none !important; }
-  .control-row .now-playing { display: none; }
   .control-row .transport { flex: 1 1 auto; }
   /* This group must wrap internally too, or the last button (fullscreen) is
      pushed past the screen edge as soon as another control appears. */
@@ -1546,3 +1545,65 @@ img.avatar { object-fit: cover; }
   backdrop-filter: blur(6px);
 }
 .sound-blocked:hover { background: rgba(8, 9, 13, 0.95); }
+
+/* ---------------------------------------------------------------- */
+/* Lists tab: expandable playlists                                   */
+/* ---------------------------------------------------------------- */
+
+.pl-row[data-open] { background: var(--surface-2); }
+.pl-head {
+  all: unset;
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  cursor: pointer;
+}
+.pl-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.pl-head .pl-main { flex: 1; }
+.pl-name { font-weight: 600; font-size: 0.88rem; line-height: 1.3; }
+.pl-chevron {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-faint);
+  transition: transform 0.15s var(--ease);
+}
+.pl-chevron[data-open] { transform: rotate(180deg); }
+
+.pl-videos {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+}
+.pl-video-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.pl-video {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 4px;
+  border-radius: var(--radius-sm);
+}
+.pl-video:hover { background: var(--surface-3); }
+.pl-video-n {
+  width: 18px;
+  flex: none;
+  padding-top: 2px;
+  text-align: right;
+  font-size: 0.72rem;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.pl-video-title { font-size: 0.8rem; font-weight: 550; line-height: 1.3; }

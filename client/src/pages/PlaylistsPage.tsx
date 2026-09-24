@@ -245,7 +245,7 @@ function CreatePlaylistModal({ onClose, onCreated }: { onClose: () => void; onCr
               <div className="q-thumb" style={{ width: 64 }}>
                 {it.thumbnail ? <img src={it.thumbnail} alt="" loading="lazy" /> : <span>🎞️</span>}
               </div>
-              <div className="truncate small grow">{it.title}</div>
+              <div className="clamp2 small grow">{it.title}</div>
             </div>
           ))}
           {items.length > 40 && <div className="tiny faint" style={{ padding: 6 }}>+ {items.length - 40} more</div>}
@@ -440,7 +440,7 @@ function PlaylistDetailModal({
               {item.duration ? <span className="dur">{formatTime(item.duration)}</span> : null}
             </div>
             <div className="grow" style={{ minWidth: 0 }}>
-              <div className="clamp2 small" style={{ fontWeight: 550 }}>{item.title}</div>
+              <div className="clamp3 small" style={{ fontWeight: 550 }}>{item.title}</div>
               <div className="tiny faint">{sourceLabel(item.source)}{item.author ? ` · ${item.author}` : ''}</div>
             </div>
             {data.playlist.mine && (

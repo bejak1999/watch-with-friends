@@ -4,6 +4,9 @@ import { BrowserRouter } from 'react-router-dom';
 import { AppProvider } from './state/AppState';
 import { App } from './App';
 import './styles/global.css';
+import { installOverflowTitles } from './lib/overflowTitles';
+
+installOverflowTitles();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -140,6 +140,11 @@ class YouTubeAdapter implements Adapter {
   private destroyed = false;
   private lastState = -1;
   private captionsWanted = false;
+  /** The room wants this playing; cleared by pause, checked by the autoplay probe. */
+  private wantsPlay = false;
+  /** Muted by us because the browser refused sound, not by the viewer. */
+  private soundBlocked = false;
+  private autoplayProbe: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private mount: HTMLElement,
@@ -225,8 +230,44 @@ class YouTubeAdapter implements Adapter {
     });
   }
 
-  play() { this.player?.playVideo?.(); }
-  pause() { this.player?.pauseVideo?.(); }
+  /**
+   * YouTube gives no error when a browser refuses to start it with sound - the
+   * player just stays put. Left alone, that viewer looked like they were
+   * buffering and held the whole room. Muted playback is always allowed, so
+   * fall back to it and say so, the same way the HTML5 player does.
+   */
+  play() {
+    this.wantsPlay = true;
+    this.player?.playVideo?.();
+    clearTimeout(this.autoplayProbe);
+    this.autoplayProbe = setTimeout(() => {
+      if (this.destroyed || !this.wantsPlay || !this.player) return;
+      const state = this.player.getPlayerState?.();
+      // -1 unstarted, 5 cued, 2 paused: asked to play, did not.
+      const refused = state === -1 || state === 5 || state === 2;
+      if (!refused || this.player.isMuted?.()) return;
+      this.soundBlocked = true;
+      this.player.mute?.();
+      this.player.playVideo?.();
+      this.cb.onSoundBlocked?.(true);
+    }, 1500);
+  }
+  pause() {
+    this.wantsPlay = false;
+    clearTimeout(this.autoplayProbe);
+    this.player?.pauseVideo?.();
+  }
+
+  unmute() {
+    this.soundBlocked = false;
+    this.player?.unMute?.();
+    this.player?.playVideo?.();
+    this.cb.onSoundBlocked?.(false);
+  }
+
+  getAudioInfo(): AudioInfo {
+    return { muted: Boolean(this.player?.isMuted?.()), audioBytes: null, hasAudio: null };
+  }
   seek(s: number) { this.player?.seekTo?.(s, true); }
   getTime() { return this.player?.getCurrentTime?.() ?? 0; }
   getDuration() { return this.player?.getDuration?.() ?? 0; }
@@ -238,7 +279,11 @@ class YouTubeAdapter implements Adapter {
   }
 
   setVolume(v: number) { this.player?.setVolume?.(Math.round(v * 100)); }
-  setMuted(m: boolean) { m ? this.player?.mute?.() : this.player?.unMute?.(); }
+  setMuted(m: boolean) {
+    // While the browser holds the sound back, only the unmute prompt may lift it.
+    if (!m && this.soundBlocked) return;
+    m ? this.player?.mute?.() : this.player?.unMute?.();
+  }
   setRate(r: number) { this.player?.setPlaybackRate?.(r); }
 
   setQuality(id: string) {
@@ -286,6 +331,7 @@ class YouTubeAdapter implements Adapter {
   destroy() {
     this.destroyed = true;
     this.ready = false;
+    clearTimeout(this.autoplayProbe);
     try {
       this.player?.destroy?.();
     } catch {
