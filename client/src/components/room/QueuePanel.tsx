@@ -15,6 +15,9 @@ interface Props {
   repeatMode: 'off' | 'one' | 'all';
   actions: RoomActions;
   onAddClick: () => void;
+  /** Name of the saved playlist the room is playing from instead, if any. */
+  playingPlaylist: string | null;
+  onShowPlaylist: () => void;
 }
 
 export function QueuePanel({
@@ -26,6 +29,8 @@ export function QueuePanel({
   repeatMode,
   actions,
   onAddClick,
+  playingPlaylist,
+  onShowPlaylist,
 }: Props) {
   const { toast } = useApp();
   const [dragId, setDragId] = useState<string | null>(null);
@@ -88,6 +93,16 @@ export function QueuePanel({
           </button>
         </div>
       </div>
+
+      {playingPlaylist && (
+        <button className="queue-elsewhere" onClick={onShowPlaylist} title="Show it in the Lists tab">
+          <Icon name="list" size={14} />
+          <span className="grow" style={{ minWidth: 0 }}>
+            Playing from the playlist <b>{playingPlaylist}</b>.{' '}
+            {queue.length > 0 && canControl ? 'Click a video below to switch to the queue.' : 'The queue waits.'}
+          </span>
+        </button>
+      )}
 
       <div className="scroll-y" style={{ padding: 6 }} onDragOver={(e) => e.preventDefault()}>
         {queue.length === 0 ? (

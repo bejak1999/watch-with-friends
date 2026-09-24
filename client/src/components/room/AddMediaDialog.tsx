@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type MediaItem, type PlaylistSummary, type StorageStats } from '../../lib/api';
+import { api, type MediaItem, type StorageStats } from '../../lib/api';
 import { useApp } from '../../state/AppState';
 import { EmptyState, Field, Icon, Meter, Modal, Spinner } from '../ui';
 import { formatBytes, formatTime, sourceLabel } from '../../lib/format';
 
-type Tab = 'link' | 'search' | 'upload' | 'library';
+type Tab = 'link' | 'search' | 'upload';
 
 interface Props {
   roomId: string;
@@ -51,15 +51,11 @@ export function AddMediaDialog({ roomId, onClose, onAdd }: Props) {
         <button className="tab" aria-selected={tab === 'upload'} onClick={() => setTab('upload')}>
           <Icon name="upload" size={14} /> Upload
         </button>
-        <button className="tab" aria-selected={tab === 'library'} onClick={() => setTab('library')}>
-          <Icon name="list" size={14} /> Playlists
-        </button>
       </div>
 
       {tab === 'link' && <LinkTab onAdd={add} providers={providers} />}
       {tab === 'search' && <SearchTab enabled={hasYoutubeApi} onAdd={add} />}
       {tab === 'upload' && <UploadTab onAdd={add} />}
-      {tab === 'library' && <LibraryTab roomId={roomId} onDone={onClose} />}
     </Modal>
   );
 }
@@ -559,130 +555,5 @@ function UploadTab({ onAdd }: { onAdd: (items: MediaItem[]) => void }) {
         </>
       )}
     </>
-  );
-}
-
-/* ---------------------------------------------------------------- */
-/* Library tab                                                       */
-/* ---------------------------------------------------------------- */
-
-function LibraryTab({ roomId, onDone }: { roomId: string; onDone: () => void }) {
-  const { toast } = useApp();
-  const [playlists, setPlaylists] = useState<PlaylistSummary[] | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-
-  useEffect(() => {
-    api
-      .get<{ playlists: PlaylistSummary[] }>('/playlists')
-      .then((res) => setPlaylists(res.playlists))
-      .catch(() => setPlaylists([]));
-  }, []);
-
-  // 'play' starts it now (after whatever is on); 'queue' only appends it and
-  // starts it only if nothing else is playing.
-  const load = async (id: string, mode: 'play' | 'queue', resume: boolean) => {
-    setBusyId(id);
-    try {
-      const res = await api.post<{
-        added: number;
-        started: boolean;
-        resumed: { title: string; position: number } | null;
-      }>(`/playlists/${id}/load-into/${roomId}`, { mode, resume });
-      toast(
-        res.resumed
-          ? `Picked up at ${formatTime(res.resumed.position)} of "${res.resumed.title}"`
-          : res.started
-            ? `Playing - ${res.added} videos`
-            : `Added ${res.added} videos to the end of the queue`,
-        'success'
-      );
-      onDone();
-    } catch (err) {
-      toast(err instanceof Error ? err.message : 'Could not load that playlist', 'error');
-      setBusyId(null);
-    }
-  };
-
-  const forget = async (id: string) => {
-    try {
-      await api.del(`/playlists/${id}/progress`);
-      setPlaylists((prev) => prev?.map((p) => (p.id === id ? { ...p, progress: null } : p)) ?? prev);
-      toast('Starting from the beginning next time', 'success');
-    } catch (err) {
-      toast(err instanceof Error ? err.message : 'Could not reset that playlist', 'error');
-    }
-  };
-
-  if (!playlists) return <Spinner />;
-  if (playlists.length === 0) {
-    return (
-      <EmptyState
-        icon="📚"
-        title="No saved playlists yet"
-        hint="Save a room queue as a playlist from the queue menu, then load it into any room."
-      />
-    );
-  }
-
-  return (
-    <div className="result-list">
-      {playlists.map((p) => (
-        <div className="result" key={p.id}>
-          <div className="q-thumb" style={{ width: 72 }}>
-            {p.cover ? <img src={p.cover} alt="" loading="lazy" /> : <span>📁</span>}
-          </div>
-          <div className="grow" style={{ minWidth: 0 }}>
-            <div className="clamp2" style={{ fontWeight: 600, fontSize: '0.88rem' }}>{p.name}</div>
-            <div className="tiny faint">
-              {p.itemCount} videos{!p.mine && p.ownerName ? ` · from ${p.ownerName}` : ''}
-            </div>
-            {p.progress && (
-              <div className="tiny truncate" style={{ color: 'var(--accent)' }}>
-                ▶ {p.progress.itemIndex > 0 ? `${p.progress.itemIndex}/${p.progress.itemCount} · ` : ''}
-                {p.progress.title} at {formatTime(p.progress.position)}
-              </div>
-            )}
-          </div>
-          <div className="row" style={{ gap: 4, flex: 'none' }}>
-            {p.progress ? (
-              <>
-                <button className="btn sm primary" onClick={() => load(p.id, 'play', true)} disabled={busyId === p.id}>
-                  {busyId === p.id ? <span className="spinner" /> : 'Continue'}
-                </button>
-                <button
-                  className="btn sm"
-                  onClick={() => load(p.id, 'play', false)}
-                  disabled={busyId === p.id}
-                  title="Play it from the first video"
-                >
-                  Start over
-                </button>
-                <button
-                  className="btn ghost icon sm"
-                  onClick={() => forget(p.id)}
-                  title="Forget where we got to, without loading it"
-                >
-                  <Icon name="refresh" size={13} />
-                </button>
-              </>
-            ) : (
-              <>
-                <button className="btn sm primary" onClick={() => load(p.id, 'play', false)} disabled={busyId === p.id}>
-                  {busyId === p.id ? <span className="spinner" /> : 'Play'}
-                </button>
-                <button
-                  className="btn sm"
-                  onClick={() => load(p.id, 'queue', false)}
-                  disabled={busyId === p.id}
-                  title="Add it to the end of the queue"
-                >
-                  Queue
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      ))}
-    </div>
   );
 }

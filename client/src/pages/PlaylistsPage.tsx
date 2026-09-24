@@ -310,14 +310,15 @@ function PlaylistDetailModal({
 
   const loadInto = async (roomId: string, resume: boolean) => {
     try {
-      const res = await api.post<{ added: number; resumed: { title: string; position: number } | null }>(
-        `/playlists/${id}/load-into/${roomId}`,
+      // Plays straight from the playlist - the room's queue is left alone.
+      const res = await api.post<{ resumed: { title: string; position: number } | null }>(
+        `/playlists/${id}/play/${roomId}`,
         { resume }
       );
       toast(
         res.resumed
           ? `Picked up at ${formatTime(res.resumed.position)} of "${res.resumed.title}"`
-          : `Queued ${res.added} videos`,
+          : 'Playing from the first video',
         'success'
       );
       onClose();
@@ -393,7 +394,7 @@ function PlaylistDetailModal({
 
       {joinable.length > 0 && (
         <Field
-          label="Load into a room"
+          label="Play in a room"
           hint={data.progress ? 'Continue picks up where the group left off.' : undefined}
         >
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -404,7 +405,7 @@ function PlaylistDetailModal({
                   {data.progress ? ' – continue' : ''}
                 </button>
                 {data.progress && (
-                  <button className="btn sm" onClick={() => loadInto(r.id, false)} title={`Load into ${r.name} from the start`}>
+                  <button className="btn sm" onClick={() => loadInto(r.id, false)} title={`Play it in ${r.name} from the first video`}>
                     from the start
                   </button>
                 )}

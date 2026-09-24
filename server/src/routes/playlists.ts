@@ -2,9 +2,15 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { db } from '../db';
 import { newId, requireAuth } from '../auth';
-import { addToQueue, canQueue, memberRole, queueDTO, roomById } from '../services/rooms';
-import { broadcastQueue, roomIsIdle, selectQueueItem } from '../realtime';
-import { progressFor, progressForMany, resetProgress, setRoomPlaylist } from '../services/playlistProgress';
+import { canControl, memberRole, queueDTO, roomById } from '../services/rooms';
+import {
+  announcePlaylistChange,
+  broadcastSystemMessage,
+  playEpisode,
+  playlistDeleted,
+  removeEpisode,
+} from '../realtime';
+import { progressFor, progressForMany, resetProgress } from '../services/playlistProgress';
 import type { MediaItem } from '../types';
 
 export const playlistsRouter = Router();
@@ -205,6 +211,7 @@ playlistsRouter.delete('/:id/progress', (req, res) => {
     return;
   }
   resetProgress(row.id);
+  announcePlaylistChange(row.id);
   res.json({ ok: true });
 });
 
@@ -237,6 +244,7 @@ playlistsRouter.patch('/:id', (req, res) => {
     Date.now(),
     row.id
   );
+  announcePlaylistChange(row.id);
   res.json({ ok: true });
 });
 
@@ -264,6 +272,7 @@ playlistsRouter.post('/:id/items', (req, res) => {
     db.prepare('UPDATE playlists SET updated_at = ? WHERE id = ?').run(Date.now(), row.id);
   });
   tx();
+  announcePlaylistChange(row.id);
   res.json({ ok: true, items: toDTO(itemsOf(row.id)) });
 });
 
@@ -273,8 +282,10 @@ playlistsRouter.delete('/:id/items/:itemId', (req, res) => {
     res.status(row ? 403 : 404).json({ error: row ? 'That is not your playlist' : 'Playlist not found' });
     return;
   }
-  db.prepare('DELETE FROM playlist_items WHERE playlist_id = ? AND id = ?').run(row.id, req.params.itemId);
-  db.prepare('UPDATE playlists SET updated_at = ? WHERE id = ?').run(Date.now(), row.id);
+  removeEpisode(row.id, req.params.itemId, () => {
+    db.prepare('DELETE FROM playlist_items WHERE playlist_id = ? AND id = ?').run(row.id, req.params.itemId);
+    db.prepare('UPDATE playlists SET updated_at = ? WHERE id = ?').run(Date.now(), row.id);
+  });
   res.json({ ok: true });
 });
 
@@ -295,6 +306,7 @@ playlistsRouter.post('/:id/reorder', (req, res) => {
     });
   });
   tx();
+  announcePlaylistChange(row.id);
   res.json({ ok: true });
 });
 
@@ -309,11 +321,21 @@ playlistsRouter.delete('/:id', (req, res) => {
     return;
   }
   db.prepare('DELETE FROM playlists WHERE id = ?').run(row.id);
+  playlistDeleted(row.id);
   res.json({ ok: true });
 });
 
-/** Load an entire playlist into a room queue. */
-playlistsRouter.post('/:id/load-into/:roomId', (req, res) => {
+/**
+ * Play a saved playlist in a room - straight from the playlist, without copying
+ * anything into the room's queue. The queue is for one-off videos and stays
+ * exactly as it was; when the playlist ends, the room stops.
+ *
+ * Body: { itemId?, resume? }
+ *   itemId - start at this episode (clicking an episode in the list)
+ *   resume - pick up at the bookmark, mid-episode
+ *   neither - from the first episode, which also forgets the bookmark
+ */
+playlistsRouter.post('/:id/play/:roomId', (req, res) => {
   const { row } = ownedPlaylist(req.params.id, req.user!.id, req.user!.isAdmin);
   if (!row) {
     res.status(404).json({ error: 'Playlist not found' });
@@ -328,72 +350,62 @@ playlistsRouter.post('/:id/load-into/:roomId', (req, res) => {
     res.status(404).json({ error: 'Room not found' });
     return;
   }
-  const role = memberRole(room.id, req.user!.id);
-  if (!canQueue(room, req.user!, role)) {
-    res.status(403).json({ error: 'Only hosts can add to the queue in this room' });
+  // It changes what everybody is watching, so it takes the same right as skipping.
+  if (!canControl(room, req.user!, memberRole(room.id, req.user!.id))) {
+    res.status(403).json({ error: 'Only hosts can change what plays in this room' });
     return;
   }
-  const items = toDTO(itemsOf(row.id)).map((i) => ({
-    source: i.source as MediaItem['source'],
-    sourceId: i.sourceId,
-    url: i.url,
-    title: i.title,
-    author: i.author,
-    duration: i.duration,
-    thumbnail: i.thumbnail,
-  }));
+  const items = itemsOf(row.id);
   if (items.length === 0) {
     res.status(400).json({ error: 'That playlist is empty' });
     return;
   }
-  /**
-   * Two ways in, and the difference is whether anything gets interrupted:
-   *   play  - starts now, slotted in right after the current video
-   *   queue - joins the end; only starts by itself if the room was idle
-   * Neither removes anything already queued.
-   */
-  const mode = req.body?.mode === 'play' ? 'play' : 'queue';
-  const resume = req.body?.resume === true;
-  const saved = progressFor(row.id);
 
-  // Continuing picks up at the bookmarked video and leaves out the ones before
-  // it - there is no point queueing episodes everybody has already seen.
+  const itemId = typeof req.body?.itemId === 'string' ? req.body.itemId : null;
+  const saved = progressFor(row.id);
+  let start = items[0];
   let startAt = 0;
-  let toAdd = items;
-  let resumedAt: { title: string; position: number } | null = null;
-  if (resume && saved) {
-    const idx = items.findIndex((i) => i.source === saved.source && i.sourceId === saved.sourceId);
-    if (idx >= 0) {
-      toAdd = items.slice(idx);
-      startAt = saved.position;
-      resumedAt = { title: items[idx].title, position: saved.position };
+  let resumed: { title: string; position: number } | null = null;
+
+  if (itemId) {
+    const hit = items.find((i) => i.id === itemId);
+    if (!hit) {
+      res.status(404).json({ error: 'That video is no longer in the playlist' });
+      return;
     }
-  } else if (!resume && mode === 'play') {
-    // Playing from the top is an instruction to forget the bookmark, or the next
-    // visit would offer to resume a position nobody wants any more.
+    start = hit;
+    // Clicking the episode the bookmark sits on continues it, the way people
+    // expect "that one" to mean "where we were in that one".
+    if (saved && saved.source === hit.source && saved.sourceId === hit.source_id) {
+      startAt = saved.position;
+      resumed = { title: hit.title, position: saved.position };
+    }
+  } else if (req.body?.resume === true && saved) {
+    const hit = items.find((i) => i.source === saved.source && i.source_id === saved.sourceId);
+    if (hit) {
+      start = hit;
+      startAt = saved.position;
+      resumed = { title: hit.title, position: saved.position };
+    }
+  } else {
+    // From the top is an instruction to forget the bookmark, or the next visit
+    // would offer to resume a position nobody wants any more.
     resetProgress(row.id);
   }
 
-  const idle = roomIsIdle(room.id);
-  // Tagged with the playlist, so its bookmark moves whenever one of these plays -
-  // now or much later, after whatever was queued ahead of it.
-  const created = addToQueue(room.id, req.user!.id, toAdd, mode === 'play' ? 'next' : 'end', row.id);
-  const started = mode === 'play' || idle;
-  if (started && created[0]) {
-    setRoomPlaylist(room.id, row.id);
-    selectQueueItem(room.id, created[0].id, startAt, true);
-  }
+  playEpisode(room.id, row.id, start.id, startAt, true);
 
   const who = req.user!.displayName;
-  broadcastQueue(
+  broadcastSystemMessage(
     room.id,
-    started && resumedAt
-      ? `${who} continued "${row.name}" at ${formatClock(resumedAt.position)} of "${resumedAt.title}"`
-      : started
-        ? `${who} started playlist "${row.name}" (${toAdd.length} videos)`
-        : `${who} queued playlist "${row.name}" (${toAdd.length} videos)`
+    resumed
+      ? `${who} continued "${row.name}" at ${formatClock(resumed.position)} of "${resumed.title}"`
+      : itemId
+        ? `${who} played "${start.title}" from "${row.name}"`
+        : `${who} started the playlist "${row.name}"`
   );
-  res.json({ ok: true, added: toAdd.length, started, resumed: resumedAt });
+  announcePlaylistChange(row.id);
+  res.json({ ok: true, itemId: start.id, resumed });
 });
 
 function formatClock(seconds: number): string {

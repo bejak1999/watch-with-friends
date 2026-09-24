@@ -8,11 +8,14 @@ import {
   canManageRoom,
   canQueue,
   clearQueue,
+  currentMedia,
   memberList,
   memberRole,
   moveQueueItem,
+  nextEpisodeId,
   nextItemId,
   playbackState,
+  prevEpisodeId,
   prevItemId,
   projectedPosition,
   queueDTO,
@@ -26,8 +29,8 @@ import {
 import { z } from 'zod';
 import { creditWatchTime, logPlay } from './services/stats';
 import { createLogger } from './services/logger';
-import { recordProgress, setRoomPlaylist } from './services/playlistProgress';
-import type { MediaItem, PublicUser, RoomRole } from './types';
+import { recordProgress, resetProgress, setRoomPlaylist } from './services/playlistProgress';
+import type { MediaItem, PublicUser, RoomRole, RoomRow } from './types';
 
 const log = createLogger('sync');
 
@@ -328,6 +331,11 @@ export function kickUser(roomId: string, userId: string | null, reason: string) 
   }
 }
 
+/** A line in the room's chat from the app itself, for callers outside the socket layer. */
+export function broadcastSystemMessage(roomId: string, body: string): void {
+  systemMessageTo(roomId, body);
+}
+
 function systemMessageTo(roomId: string, body: string) {
   const id = newId();
   const now = Date.now();
@@ -373,22 +381,22 @@ export function roomIsIdle(roomId: string): boolean {
   if (!room.current_item_id) return true;
   if (room.is_playing === 1) return false;
   if (queueEnded.get(roomId)) return true;
-  const item = db.prepare('SELECT duration FROM queue_items WHERE id = ?').get(room.current_item_id) as
-    | { duration: number | null }
-    | undefined;
+  const item = currentMedia(room);
   return Boolean(item?.duration && item.duration > 0 && room.position >= item.duration - 2);
 }
 
-function selectItem(roomId: string, itemId: string | null, autoplay: boolean) {
+/**
+ * Select what plays. `playlistId` says which list `itemId` belongs to: null for
+ * the queue, or a saved playlist whose episode it is. Picking from one list
+ * leaves the other exactly as it was - the two are not connected.
+ */
+function selectItem(roomId: string, itemId: string | null, autoplay: boolean, playlistId: string | null = null) {
   queueEnded.delete(roomId);
-  writePlayback(roomId, { currentItemId: itemId, position: 0, isPlaying: autoplay && Boolean(itemId) });
-  if (itemId) {
-    const row = db.prepare('SELECT title, source, added_by FROM queue_items WHERE id = ?').get(itemId) as
-      | { title: string; source: string; added_by: string | null }
-      | undefined;
-    if (row) logPlay(roomId, row.title, row.source, row.added_by);
-  }
-  markPlayed(itemId);
+  setRoomPlaylist(roomId, itemId ? playlistId : null);
+  const room = writePlayback(roomId, { currentItemId: itemId, position: 0, isPlaying: autoplay && Boolean(itemId) });
+  const media = currentMedia(room);
+  if (media) logPlay(roomId, media.title, media.source, media.addedBy);
+  if (!playlistId) markPlayed(itemId);
   lastAdvance.set(roomId, Date.now());
   endWait(roomId);
   emitPlayback(roomId);
@@ -396,16 +404,54 @@ function selectItem(roomId: string, itemId: string | null, autoplay: boolean) {
 }
 
 /**
- * Jump the room straight to a queue item at a given offset. Used when a
- * playlist is loaded with "continue where we left off", which has to land
- * mid-track rather than at zero like a normal track change.
+ * Play an episode of a saved playlist, optionally from a given offset ("continue
+ * where we left off" lands mid-episode). The queue is left alone.
  */
-export function selectQueueItem(roomId: string, itemId: string, position: number, autoplay = true): void {
-  selectItem(roomId, itemId, autoplay);
+export function playEpisode(roomId: string, playlistId: string, itemId: string, position: number, autoplay = true): void {
+  selectItem(roomId, itemId, autoplay, playlistId);
   if (position > 0) {
     writePlayback(roomId, { position, isPlaying: autoplay });
     emitPlayback(roomId);
   }
+}
+
+/** Rooms currently playing from `playlistId`, optionally only those on one episode. */
+function roomsPlaying(playlistId: string, itemId?: string): RoomRow[] {
+  return (
+    itemId
+      ? db.prepare('SELECT * FROM rooms WHERE playlist_id = ? AND current_item_id = ?').all(playlistId, itemId)
+      : db.prepare('SELECT * FROM rooms WHERE playlist_id = ?').all(playlistId)
+  ) as RoomRow[];
+}
+
+/** Every open Lists tab refetches, so an edit shows up for everyone at once. */
+export function announcePlaylistChange(playlistId: string): void {
+  io?.emit('playlist:changed', { playlistId });
+}
+
+/**
+ * Remove an episode. A room watching exactly that one moves on to the next
+ * (still playing if it was), rather than being left on a video that is gone.
+ */
+export function removeEpisode(playlistId: string, itemId: string, remove: () => void): void {
+  const affected = roomsPlaying(playlistId, itemId).map((room) => ({
+    room,
+    next: nextEpisodeId(playlistId, itemId, 'off'),
+  }));
+  remove();
+  for (const { room, next } of affected) {
+    selectItem(room.id, next, next ? room.is_playing === 1 : false, next ? playlistId : null);
+  }
+  announcePlaylistChange(playlistId);
+}
+
+/** A playlist is being deleted: rooms playing it stop, their queue untouched. */
+export function playlistDeleted(playlistId: string): void {
+  for (const room of roomsPlaying(playlistId)) {
+    selectItem(room.id, null, false);
+    systemMessageTo(room.id, 'The playlist that was playing has been deleted');
+  }
+  announcePlaylistChange(playlistId);
 }
 
 /** Past the end by this much with nobody watching, the room moves on by itself. */
@@ -423,13 +469,11 @@ const OVERRUN_S = 4;
  */
 function overranTheEnd(
   roomId: string,
-  room: { current_item_id: string | null },
+  room: RoomRow,
   payload: { position: number; stateAt: number; rate: number }
 ): boolean {
   if (!room.current_item_id) return false;
-  const item = db.prepare('SELECT duration, source FROM queue_items WHERE id = ?').get(room.current_item_id) as
-    | { duration: number | null; source: string }
-    | undefined;
+  const item = currentMedia(room);
   if (!item?.duration || item.duration <= 0 || item.source === 'twitch_live') return false;
   const at = payload.position + ((Date.now() - payload.stateAt) / 1000) * (payload.rate || 1);
   if (at < item.duration + OVERRUN_S) return false;
@@ -452,8 +496,14 @@ function overranTheEnd(
 function advance(roomId: string, direction: 1 | -1 = 1) {
   const room = roomById(roomId);
   if (!room) return;
-  const target =
-    direction === 1
+  // Each list only ever steps through itself: the end of a playlist does not
+  // spill into the queue, nor the other way round.
+  const playlistId = room.playlist_id ?? null;
+  const target = playlistId
+    ? direction === 1
+      ? nextEpisodeId(playlistId, room.current_item_id, room.repeat_mode)
+      : prevEpisodeId(playlistId, room.current_item_id)
+    : direction === 1
       ? nextItemId(roomId, room.current_item_id, room.repeat_mode)
       : prevItemId(roomId, room.current_item_id);
 
@@ -461,7 +511,17 @@ function advance(roomId: string, direction: 1 | -1 = 1) {
     writePlayback(roomId, { isPlaying: false });
     queueEnded.set(roomId, true);
     emitPlayback(roomId);
-    systemMessageTo(roomId, 'Reached the end of the queue');
+    if (playlistId) {
+      // Watched to the end: next time it starts from the first episode again
+      // instead of offering to "continue" the last few seconds of the finale.
+      resetProgress(playlistId);
+      const name = db.prepare('SELECT name FROM playlists WHERE id = ?').get(playlistId) as
+        | { name: string }
+        | undefined;
+      systemMessageTo(roomId, `Reached the end of the playlist${name ? ` "${name.name}"` : ''}`);
+    } else {
+      systemMessageTo(roomId, 'Reached the end of the queue');
+    }
     return;
   }
   if (target === room.current_item_id && room.repeat_mode === 'one') {
@@ -470,7 +530,7 @@ function advance(roomId: string, direction: 1 | -1 = 1) {
     emitPlayback(roomId);
     return;
   }
-  selectItem(roomId, target, true);
+  selectItem(roomId, target, true, playlistId);
 }
 
 /** Pause/resume automatically while someone is still buffering. */
@@ -791,6 +851,15 @@ export function initRealtime(httpServer: HttpServer): Server {
       const room = currentRoom();
       const duration = Number(payload?.duration);
       if (!room || !payload?.itemId || !Number.isFinite(duration) || duration <= 0) return;
+      if (room.playlist_id) {
+        const changed = db
+          .prepare(
+            'UPDATE playlist_items SET duration = ? WHERE id = ? AND playlist_id = ? AND (duration IS NULL OR duration = 0)'
+          )
+          .run(Math.round(duration), payload.itemId, room.playlist_id);
+        if (changed.changes > 0) emitPlayback(room.id);
+        return;
+      }
       const changed = db
         .prepare('UPDATE queue_items SET duration = ? WHERE id = ? AND room_id = ? AND (duration IS NULL OR duration = 0)')
         .run(Math.round(duration), payload.itemId, room.id);
@@ -860,20 +929,22 @@ export function initRealtime(httpServer: HttpServer): Server {
     socket.on('queue:clear', (payload: { keepCurrent?: boolean }) => {
       if (!guard('queue')) return;
       const room = currentRoom()!;
-      const keep = payload?.keepCurrent === false ? null : room.current_item_id;
-      clearQueue(room.id, keep);
-      // The queue is no longer the playlist, so stop moving its bookmark.
-      // The bookmark itself survives - clearing a queue is not "start over".
-      if (!keep) setRoomPlaylist(room.id, null);
-      if (!keep) writePlayback(room.id, { currentItemId: null, isPlaying: false, position: 0 });
-      emitPlayback(room.id);
+      // A playlist episode is not in the queue: clearing the queue leaves it playing.
+      if (room.playlist_id) {
+        clearQueue(room.id, null);
+      } else {
+        const keep = payload?.keepCurrent === false ? null : room.current_item_id;
+        clearQueue(room.id, keep);
+        if (!keep) writePlayback(room.id, { currentItemId: null, isPlaying: false, position: 0 });
+        emitPlayback(room.id);
+      }
       broadcastQueue(room.id, `${state.user.displayName} cleared the queue`);
     });
 
     socket.on('queue:shuffle', () => {
       if (!guard('queue')) return;
       const room = currentRoom()!;
-      shuffleQueue(room.id, room.current_item_id);
+      shuffleQueue(room.id, room.playlist_id ? null : room.current_item_id);
       broadcastQueue(room.id, `${state.user.displayName} shuffled the queue`);
     });
 
@@ -980,23 +1051,14 @@ export function initRealtime(httpServer: HttpServer): Server {
         continue;
       }
 
-      // Keep the bookmark of the playlist this video came from current, so
-      // leaving mid-episode and coming back tomorrow lands in the right place.
-      if (payload && room.current_item_id) {
-        const item = db
-          .prepare('SELECT source, source_id, title, playlist_id FROM queue_items WHERE id = ?')
-          .get(room.current_item_id) as
-          | { source: string; source_id: string; title: string; playlist_id: string | null }
-          | undefined;
-        // Rows queued before the per-item column existed fall back to the room's.
-        const playlistId = item?.playlist_id ?? room.playlist_id;
-        if (item && playlistId) {
-          recordProgress(
-            playlistId,
-            { source: item.source, sourceId: item.source_id, title: item.title },
-            payload.position + (Date.now() - payload.stateAt) / 1000
-          );
-        }
+      // Keep the playlist's bookmark current, so leaving mid-episode and coming
+      // back tomorrow lands in the right place. Queue videos have no bookmark.
+      if (payload && room.playlist_id && payload.item) {
+        recordProgress(
+          room.playlist_id,
+          { source: payload.item.source, sourceId: payload.item.sourceId, title: payload.item.title },
+          payload.position + (Date.now() - payload.stateAt) / 1000
+        );
       }
 
       const watching = new Set<string>();

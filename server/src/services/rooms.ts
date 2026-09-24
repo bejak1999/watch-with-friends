@@ -15,7 +15,7 @@ export interface QueueItemDTO {
   addedByName: string | null;
   addedAt: number;
   playedAt: number | null;
-  /** The playlist this was loaded from, if any. */
+  /** Set when this is an episode of a saved playlist rather than a queue item. */
   playlistId: string | null;
 }
 
@@ -121,8 +121,109 @@ export function queueDTO(roomId: string): QueueItemDTO[] {
     addedByName: r.added_by_name,
     addedAt: r.added_at,
     playedAt: r.played_at,
-    playlistId: r.playlist_id ?? null,
+    // The queue is not tied to saved playlists any more; rows loaded by the
+    // old "load into queue" may still carry an id, which means nothing now.
+    playlistId: null,
   }));
+}
+
+/* ------------------------------------------------------------------ */
+/* Saved playlists as a playback source                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A room plays either from its queue or straight from a saved playlist
+ * (rooms.playlist_id set). Playing a playlist does not copy anything into the
+ * queue: current_item_id then names a playlist_items row instead.
+ */
+interface PlaylistItemRow {
+  id: string;
+  playlist_id: string;
+  sort: number;
+  source: string;
+  source_id: string;
+  url: string | null;
+  title: string;
+  author: string | null;
+  duration: number | null;
+  thumbnail: string | null;
+}
+
+export function playlistItemRows(playlistId: string): PlaylistItemRow[] {
+  return db
+    .prepare('SELECT * FROM playlist_items WHERE playlist_id = ? ORDER BY sort ASC')
+    .all(playlistId) as PlaylistItemRow[];
+}
+
+/** An episode, shaped like a queue item so the player needs no second code path. */
+function episodeDTO(r: PlaylistItemRow): QueueItemDTO {
+  return {
+    id: r.id,
+    source: r.source,
+    sourceId: r.source_id,
+    url: r.url,
+    title: r.title,
+    author: r.author,
+    duration: r.duration,
+    thumbnail: r.thumbnail,
+    addedBy: null,
+    addedByName: null,
+    addedAt: 0,
+    playedAt: null,
+    playlistId: r.playlist_id,
+  };
+}
+
+/** Whatever the room has selected, from whichever list it plays. */
+export function currentMedia(room: RoomRow): QueueItemDTO | null {
+  if (!room.current_item_id) return null;
+  if (room.playlist_id) {
+    const row = db
+      .prepare('SELECT * FROM playlist_items WHERE id = ? AND playlist_id = ?')
+      .get(room.current_item_id, room.playlist_id) as PlaylistItemRow | undefined;
+    return row ? episodeDTO(row) : null;
+  }
+  const row = db
+    .prepare(
+      `SELECT q.*, u.display_name AS added_by_name
+       FROM queue_items q LEFT JOIN users u ON u.id = q.added_by
+       WHERE q.id = ? AND q.room_id = ?`
+    )
+    .get(room.current_item_id, room.id) as (QueueItemRow & { added_by_name: string | null }) | undefined;
+  if (!row) return null;
+  return {
+    id: row.id,
+    source: row.source,
+    sourceId: row.source_id,
+    url: row.url,
+    title: row.title,
+    author: row.author,
+    duration: row.duration,
+    thumbnail: row.thumbnail,
+    addedBy: row.added_by,
+    addedByName: row.added_by_name,
+    addedAt: row.added_at,
+    playedAt: row.played_at,
+    playlistId: null,
+  };
+}
+
+export function nextEpisodeId(playlistId: string, currentId: string | null, repeat: string): string | null {
+  const rows = playlistItemRows(playlistId);
+  if (rows.length === 0) return null;
+  const idx = currentId ? rows.findIndex((r) => r.id === currentId) : -1;
+  if (repeat === 'one' && idx >= 0) return rows[idx].id;
+  if (idx === -1) return rows[0].id;
+  if (idx + 1 < rows.length) return rows[idx + 1].id;
+  return repeat === 'all' ? rows[0].id : null;
+}
+
+export function prevEpisodeId(playlistId: string, currentId: string | null): string | null {
+  const rows = playlistItemRows(playlistId);
+  if (rows.length === 0) return null;
+  const idx = currentId ? rows.findIndex((r) => r.id === currentId) : -1;
+  if (idx <= 0) return rows[0].id;
+  return rows[idx - 1].id;
 }
 
 function nextSort(roomId: string): number {
@@ -142,8 +243,7 @@ export function addToQueue(
   roomId: string,
   userId: string,
   items: MediaItem[],
-  placement: Placement | boolean = 'end',
-  playlistId: string | null = null
+  placement: Placement | boolean = 'end'
 ): QueueItemRow[] {
   const where: Placement = placement === true || placement === 'next' ? 'next' : 'end';
   const now = Date.now();
@@ -157,7 +257,7 @@ export function addToQueue(
         ? (db
             .prepare(
               `SELECT q.sort FROM rooms r JOIN queue_items q ON q.id = r.current_item_id
-                WHERE r.id = ? AND q.room_id = r.id`
+                WHERE r.id = ? AND q.room_id = r.id AND r.playlist_id IS NULL`
             )
             .get(roomId) as { sort: number } | undefined)
         : undefined;
@@ -185,8 +285,8 @@ export function addToQueue(
     for (const item of items) {
       const id = newId();
       db.prepare(
-        `INSERT INTO queue_items (id, room_id, sort, source, source_id, url, title, author, duration, thumbnail, added_by, added_at, playlist_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO queue_items (id, room_id, sort, source, source_id, url, title, author, duration, thumbnail, added_by, added_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         roomId,
@@ -199,8 +299,7 @@ export function addToQueue(
         item.duration ?? null,
         item.thumbnail ?? null,
         userId,
-        now,
-        playlistId
+        now
       );
       created.push(db.prepare('SELECT * FROM queue_items WHERE id = ?').get(id) as QueueItemRow);
       sort += step;
@@ -262,6 +361,11 @@ export function shuffleQueue(roomId: string, keepFirst: string | null): void {
 
 export interface PlaybackState {
   currentItemId: string | null;
+  /** The selected video itself - it may be a playlist episode, not in the queue. */
+  item: QueueItemDTO | null;
+  /** Saved playlist the room is playing from; null means the queue. */
+  playlistId: string | null;
+  playlistName: string | null;
   isPlaying: boolean;
   /** Position in seconds at `stateAt`. */
   position: number;
@@ -274,6 +378,12 @@ export interface PlaybackState {
 export function playbackState(room: RoomRow): PlaybackState {
   return {
     currentItemId: room.current_item_id,
+    item: currentMedia(room),
+    playlistId: room.playlist_id ?? null,
+    playlistName: room.playlist_id
+      ? ((db.prepare('SELECT name FROM playlists WHERE id = ?').get(room.playlist_id) as { name: string } | undefined)
+          ?.name ?? null)
+      : null,
     isPlaying: room.is_playing === 1,
     position: room.position,
     rate: room.rate,
@@ -362,8 +472,10 @@ export function roomSummaries(user: PublicUser, onlineCounts: Map<string, number
               (SELECT COUNT(*) FROM room_members m WHERE m.room_id = r.id AND m.banned = 0) AS member_count,
               (SELECT COUNT(*) FROM queue_items q WHERE q.room_id = r.id) AS queue_count,
               (SELECT role FROM room_members m2 WHERE m2.room_id = r.id AND m2.user_id = @uid AND m2.banned = 0) AS my_role,
-              (SELECT title FROM queue_items q2 WHERE q2.id = r.current_item_id) AS now_playing,
-              (SELECT thumbnail FROM queue_items q3 WHERE q3.id = r.current_item_id) AS thumb
+              COALESCE((SELECT title FROM queue_items q2 WHERE q2.id = r.current_item_id),
+                       (SELECT title FROM playlist_items p2 WHERE p2.id = r.current_item_id)) AS now_playing,
+              COALESCE((SELECT thumbnail FROM queue_items q3 WHERE q3.id = r.current_item_id),
+                       (SELECT thumbnail FROM playlist_items p3 WHERE p3.id = r.current_item_id)) AS thumb
        FROM rooms r
        LEFT JOIN users u ON u.id = r.owner_id
        WHERE r.is_public = 1

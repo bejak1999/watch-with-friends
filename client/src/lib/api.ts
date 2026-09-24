@@ -102,7 +102,7 @@ export interface QueueItem extends MediaItem {
   addedByName: string | null;
   addedAt: number;
   playedAt: number | null;
-  /** The playlist this was loaded from, if any. */
+  /** Set when this is an episode of a saved playlist rather than a queue item. */
   playlistId: string | null;
 }
 
@@ -119,6 +119,11 @@ export interface User {
 
 export interface PlaybackState {
   currentItemId: string | null;
+  /** The selected video itself - a playlist episode is not in the queue. */
+  item?: QueueItem | null;
+  /** Saved playlist the room plays from; null means the queue. */
+  playlistId?: string | null;
+  playlistName?: string | null;
   isPlaying: boolean;
   position: number;
   rate: number;

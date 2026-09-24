@@ -37,6 +37,7 @@ export function RoomPage() {
     waitingForBuffer,
     typingUsers,
     currentItem,
+    playlistsVersion,
     actions,
   } = useRoom(roomId);
 
@@ -507,10 +508,24 @@ export function RoomPage() {
                 {currentItem.title}
               </span>
               <span className="tag">{sourceLabel(currentItem.source)}</span>
-              {currentItem.addedByName && (
-                <span className="tiny faint hide-sm" style={{ flex: 'none' }}>
-                  added by {currentItem.addedByName}
-                </span>
+              {playback.playlistId ? (
+                <button
+                  className="linklike tiny hide-sm"
+                  style={{ flex: 'none' }}
+                  onClick={() => {
+                    setSideCollapsed(false);
+                    setTab('playlists');
+                  }}
+                  title="Show the playlist"
+                >
+                  from {playback.playlistName ?? 'a playlist'}
+                </button>
+              ) : (
+                currentItem.addedByName && (
+                  <span className="tiny faint hide-sm" style={{ flex: 'none' }}>
+                    added by {currentItem.addedByName}
+                  </span>
+                )
               )}
             </div>
           )}
@@ -686,15 +701,19 @@ export function RoomPage() {
               repeatMode={playback.repeatMode}
               actions={actions}
               onAddClick={() => setAdding(true)}
+              playingPlaylist={playback.playlistId ? playback.playlistName ?? 'a playlist' : null}
+              onShowPlaylist={() => setTab('playlists')}
             />
           )}
           {tab === 'playlists' && (
             <PlaylistsPanel
               roomId={room.id}
               queue={queue}
-              canQueue={canQueue}
-              activePlaylistId={currentItem?.playlistId ?? room.playlistId}
-              roomBusy={Boolean(currentItem) && playback.isPlaying}
+              canControl={canControl}
+              activePlaylistId={playback.playlistId ?? null}
+              currentItemId={playback.currentItemId}
+              isPlaying={playback.isPlaying}
+              version={playlistsVersion}
               onStarting={() => setArmed(true)}
             />
           )}

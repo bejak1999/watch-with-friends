@@ -55,6 +55,8 @@ export function useRoom(roomId: string | undefined) {
   const [waitingForBuffer, setWaitingForBuffer] = useState(false);
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({});
   const [connected, setConnected] = useState(false);
+  /** Bumped whenever anybody edits a saved playlist, so open lists refetch. */
+  const [playlistsVersion, setPlaylistsVersion] = useState(0);
 
   const socketRef = useRef<Socket | null>(null);
   const typingTimers = useRef<Record<string, number>>({});
@@ -113,6 +115,7 @@ export function useRoom(roomId: string | undefined) {
       setPlayback(p);
     };
     const onQueueState = (p: { queue: QueueItem[] }) => setQueue(p.queue);
+    const onPlaylistChanged = () => setPlaylistsVersion((v) => v + 1);
     const onMembersState = (p: { members: Member[] }) => setMembers(p.members);
     const onChatMessage = (p: { message: ChatMessage }) => {
       setMessages((prev) => [...prev.slice(-400), p.message]);
@@ -165,6 +168,7 @@ export function useRoom(roomId: string | undefined) {
     socket.on('room:kicked', onKicked);
     socket.on('sync:waiting', onWaiting);
     socket.on('chat:typing', onTyping);
+    socket.on('playlist:changed', onPlaylistChanged);
 
     if (socket.connected) onConnect();
     else socket.connect();
@@ -194,6 +198,7 @@ export function useRoom(roomId: string | undefined) {
       socket.off('room:kicked', onKicked);
       socket.off('sync:waiting', onWaiting);
       socket.off('chat:typing', onTyping);
+      socket.off('playlist:changed', onPlaylistChanged);
     };
   }, [roomId]);
 
@@ -226,10 +231,18 @@ export function useRoom(roomId: string | undefined) {
     [emit]
   );
 
-  const currentItem = useMemo(
-    () => queue.find((q) => q.id === playback.currentItemId) ?? null,
-    [queue, playback.currentItemId]
-  );
+  // Every heartbeat carries a fresh copy of the item. Hand out the same object
+  // while nothing about it changed, so the player is not rebuilt every 5s.
+  const lastItem = useRef<QueueItem | null>(null);
+  const currentItem = useMemo(() => {
+    const next =
+      (playback.playlistId ? null : queue.find((q) => q.id === playback.currentItemId)) ??
+      (playback.item && playback.item.id === playback.currentItemId ? playback.item : null);
+    const prev = lastItem.current;
+    if (next && prev && next.id === prev.id && JSON.stringify(next) === JSON.stringify(prev)) return prev;
+    lastItem.current = next ?? null;
+    return next ?? null;
+  }, [queue, playback.currentItemId, playback.playlistId, playback.item]);
 
   return {
     status,
@@ -245,6 +258,7 @@ export function useRoom(roomId: string | undefined) {
     waitingForBuffer,
     typingUsers,
     currentItem,
+    playlistsVersion,
     actions,
   };
 }

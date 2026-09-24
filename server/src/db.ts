@@ -223,6 +223,17 @@ MIGRATIONS.push((d) => {
   d.exec(`ALTER TABLE queue_items ADD COLUMN playlist_id TEXT;`);
 });
 
+MIGRATIONS.push((d) => {
+  // Saved playlists now play on their own instead of being copied into the
+  // queue, and rooms.playlist_id means "playing from this playlist" - with
+  // current_item_id then naming one of its episodes. Rooms still carrying the
+  // old meaning point at a queue item, so they go back to plain queue mode.
+  d.exec(`
+    UPDATE rooms SET playlist_id = NULL;
+    UPDATE queue_items SET playlist_id = NULL;
+  `);
+});
+
 export function migrate(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {

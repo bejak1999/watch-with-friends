@@ -1,40 +1,40 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, type MediaItem, type PlaylistSummary, type QueueItem } from '../../lib/api';
 import { useApp } from '../../state/AppState';
 import { EmptyState, Field, Icon, Modal, Spinner, Toggle } from '../ui';
 import { formatTime, sourceLabel } from '../../lib/format';
 
-type LoadMode = 'play' | 'queue';
-
-interface LoadResult {
-  added: number;
-  started: boolean;
+interface PlayResult {
+  itemId: string;
   resumed: { title: string; position: number } | null;
 }
 
 /**
- * Playlists, in the room where they are used.
+ * Saved playlists, in the room where they are watched.
  *
- * Two jobs, kept apart on purpose. Building and editing a playlist - creating
- * one, pasting links into it, removing videos - never touches the queue. The
- * queue only changes when somebody presses Play or Queue, and those two say
- * plainly whether the video on screen gets interrupted.
+ * They play on their own - nothing is copied into the queue. The queue is for
+ * one-off videos; a playlist runs from episode to episode until its end and
+ * then stops. Building and editing one never touches what is playing either.
  */
 export function PlaylistsPanel({
   roomId,
   queue,
-  canQueue,
+  canControl,
   activePlaylistId,
-  roomBusy,
+  currentItemId,
+  isPlaying,
+  version,
   onStarting,
 }: {
   roomId: string;
   queue: QueueItem[];
-  canQueue: boolean;
-  /** The playlist the video on screen came from, if any. */
+  canControl: boolean;
+  /** The playlist the room is playing from right now, if any. */
   activePlaylistId: string | null;
-  /** Something is playing right now, so "play" would interrupt it. */
-  roomBusy: boolean;
+  currentItemId: string | null;
+  isPlaying: boolean;
+  /** Changes whenever somebody edits a playlist, so the lists refetch. */
+  version: number;
   /** Called on a press that may start playback, so this browser joins in with sound. */
   onStarting: () => void;
 }) {
@@ -42,7 +42,8 @@ export function PlaylistsPanel({
   const [playlists, setPlaylists] = useState<PlaylistSummary[] | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // The playlist on screen starts unfolded, so its episodes are one glance away.
+  const [openId, setOpenId] = useState<string | null>(activePlaylistId);
 
   const load = useCallback(async () => {
     try {
@@ -55,7 +56,7 @@ export function PlaylistsPanel({
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, version]);
 
   // The bookmark moves while people watch, so keep it from quietly going stale.
   useEffect(() => {
@@ -63,22 +64,19 @@ export function PlaylistsPanel({
     return () => window.clearInterval(timer);
   }, [load]);
 
-  const loadInto = async (p: PlaylistSummary, mode: LoadMode, resume: boolean) => {
+  useEffect(() => {
+    if (activePlaylistId) setOpenId(activePlaylistId);
+  }, [activePlaylistId]);
+
+  const play = async (p: PlaylistSummary, body: { itemId?: string; resume?: boolean }) => {
     setBusyId(p.id);
     onStarting();
     try {
-      const res = await api.post<LoadResult>(`/playlists/${p.id}/load-into/${roomId}`, { mode, resume });
-      toast(
-        res.started && res.resumed
-          ? `Continuing at ${formatTime(res.resumed.position)} of "${res.resumed.title}"`
-          : res.started
-            ? `Playing "${p.name}"`
-            : `Queued ${res.added} video${res.added === 1 ? '' : 's'} from "${p.name}"`,
-        'success'
-      );
+      const res = await api.post<PlayResult>(`/playlists/${p.id}/play/${roomId}`, body);
+      if (res.resumed) toast(`Continuing at ${formatTime(res.resumed.position)} of "${res.resumed.title}"`, 'success');
       void load();
     } catch (err) {
-      toast(err instanceof Error ? err.message : 'Could not load that playlist', 'error');
+      toast(err instanceof Error ? err.message : 'Could not play that', 'error');
     } finally {
       setBusyId(null);
     }
@@ -103,7 +101,7 @@ export function PlaylistsPanel({
         <div className="tiny faint">
           {playlists ? `${playlists.length} playlist${playlists.length === 1 ? '' : 's'}` : 'Loading…'}
         </div>
-        <button className="btn sm" onClick={() => setCreating(true)} title="Build a playlist - the queue stays as it is">
+        <button className="btn sm" onClick={() => setCreating(true)} title="Build a playlist - nothing starts playing">
           <Icon name="plus" size={14} /> New playlist
         </button>
       </div>
@@ -123,28 +121,43 @@ export function PlaylistsPanel({
             }
           />
         ) : (
-          playlists.map((p) => (
-            <PlaylistRow
-              key={p.id}
-              p={p}
-              active={p.id === activePlaylistId}
-              open={openId === p.id}
-              onToggle={() => setOpenId((cur) => (cur === p.id ? null : p.id))}
-              canQueue={canQueue}
-              editable={p.mine || Boolean(user?.isAdmin)}
-              roomBusy={roomBusy}
-              busy={busyId === p.id}
-              onPlay={() => loadInto(p, 'play', Boolean(p.progress))}
-              onStartOver={() => loadInto(p, 'play', false)}
-              onQueue={() => loadInto(p, 'queue', Boolean(p.progress))}
-              onForget={() => forget(p)}
-              onChanged={load}
-              onDeleted={() => {
-                setOpenId(null);
-                void load();
-              }}
-            />
-          ))
+          playlists.map((p) => {
+            const active = p.id === activePlaylistId;
+            return (
+              <PlaylistRow
+                key={p.id}
+                p={p}
+                active={active}
+                playing={active && isPlaying}
+                open={openId === p.id}
+                onToggle={() => setOpenId((cur) => (cur === p.id ? null : p.id))}
+                canControl={canControl}
+                editable={p.mine || Boolean(user?.isAdmin)}
+                busy={busyId === p.id}
+                onPlay={() => play(p, { resume: Boolean(p.progress) })}
+                onStartOver={() => play(p, {})}
+                onForget={() => forget(p)}
+                videos={
+                  openId === p.id ? (
+                    <PlaylistVideos
+                      id={p.id}
+                      version={version}
+                      editable={p.mine || Boolean(user?.isAdmin)}
+                      canControl={canControl}
+                      currentItemId={active ? currentItemId : null}
+                      bookmark={p.progress}
+                      onPlayItem={(itemId) => play(p, { itemId })}
+                      onChanged={load}
+                      onDeleted={() => {
+                        setOpenId(null);
+                        void load();
+                      }}
+                    />
+                  ) : null
+                }
+              />
+            );
+          })
         )}
       </div>
 
@@ -171,54 +184,49 @@ export function PlaylistsPanel({
 function PlaylistRow({
   p,
   active,
+  playing,
   open,
   onToggle,
-  canQueue,
-  editable,
-  roomBusy,
+  canControl,
   busy,
   onPlay,
   onStartOver,
-  onQueue,
   onForget,
-  onChanged,
-  onDeleted,
+  videos,
 }: {
   p: PlaylistSummary;
   active: boolean;
+  playing: boolean;
   open: boolean;
   onToggle: () => void;
-  canQueue: boolean;
+  canControl: boolean;
   editable: boolean;
-  roomBusy: boolean;
   busy: boolean;
   onPlay: () => void;
   onStartOver: () => void;
-  onQueue: () => void;
   onForget: () => void;
-  onChanged: () => void;
-  onDeleted: () => void;
+  videos: ReactNode;
 }) {
   const bookmarked = Boolean(p.progress);
-  const playLabel = bookmarked ? 'Continue' : roomBusy ? 'Play now' : 'Play';
-  const playHint = roomBusy
-    ? 'Starts right away, after the video that is on now. Nothing is taken out of the queue.'
-    : 'Starts right away.';
-  const queueHint = roomBusy
-    ? `Adds ${bookmarked ? 'the rest of it' : 'it'} to the end of the queue - nothing gets interrupted.`
-    : 'Nothing is playing, so this starts it straight away.';
 
   return (
     <div className="pl-row" data-active={active || undefined} data-open={open || undefined}>
       <button className="pl-head" onClick={onToggle} aria-expanded={open} title={open ? 'Hide the videos' : 'Show the videos'}>
+        <div className="q-thumb pl-cover">
+          {p.cover ? <img src={p.cover} alt="" loading="lazy" /> : <span>📁</span>}
+          <span className="dur">{p.itemCount}</span>
+        </div>
         <div className="pl-main">
-          <div className="pl-name clamp2">
-            {p.name}
-            {active && <span className="tag" style={{ marginLeft: 6 }}>playing</span>}
-          </div>
+          <div className="pl-name clamp2">{p.name}</div>
           <div className="tiny faint">
-            {p.itemCount} video{p.itemCount === 1 ? '' : 's'}
-            {!p.mine && p.ownerName ? ` · from ${p.ownerName}` : ''}
+            {active ? (
+              <span style={{ color: 'var(--accent)', fontWeight: 600 }}>{playing ? 'Playing now' : 'On screen, paused'}</span>
+            ) : (
+              <>
+                {p.itemCount} video{p.itemCount === 1 ? '' : 's'}
+                {!p.mine && p.ownerName ? ` · from ${p.ownerName}` : ''}
+              </>
+            )}
           </div>
           {p.progress ? (
             <div className="tiny truncate" style={{ color: 'var(--accent)' }}>
@@ -226,7 +234,7 @@ function PlaylistRow({
               {p.progress.title} at {formatTime(p.progress.position)}
             </div>
           ) : (
-            <div className="tiny faint">Not started</div>
+            !active && <div className="tiny faint">Not started</div>
           )}
         </div>
         <span className="pl-chevron" data-open={open || undefined}>
@@ -234,41 +242,45 @@ function PlaylistRow({
         </span>
       </button>
 
-      {canQueue ? (
-        <div className="pl-actions">
-          <button className="btn sm primary" onClick={onPlay} disabled={busy} title={playHint}>
-            {busy ? <span className="spinner" /> : <Icon name="play" size={13} />} {playLabel}
-          </button>
-          <button className="btn sm" onClick={onQueue} disabled={busy} title={queueHint}>
-            <Icon name="plus" size={13} /> Queue
-          </button>
-          {bookmarked && (
-            <>
-              <button className="btn ghost icon sm" onClick={onStartOver} disabled={busy} title="Play it from the first video">
-                <Icon name="prev" size={13} />
-              </button>
-              <button
-                className="btn ghost icon sm"
-                onClick={onForget}
-                disabled={busy}
-                title="Forget where we got to, without playing anything"
-              >
-                <Icon name="refresh" size={13} />
-              </button>
-            </>
-          )}
-        </div>
+      {canControl ? (
+        !active && (
+          <div className="pl-actions">
+            <button
+              className="btn sm primary"
+              onClick={onPlay}
+              disabled={busy || p.itemCount === 0}
+              title={bookmarked ? 'Pick up where the group left off' : 'Play it from the first video'}
+            >
+              {busy ? <span className="spinner" /> : <Icon name="play" size={13} />} {bookmarked ? 'Continue' : 'Play'}
+            </button>
+            {bookmarked && (
+              <>
+                <button className="btn ghost icon sm" onClick={onStartOver} disabled={busy} title="Play it from the first video">
+                  <Icon name="prev" size={13} />
+                </button>
+                <button
+                  className="btn ghost icon sm"
+                  onClick={onForget}
+                  disabled={busy}
+                  title="Forget where we got to, without playing anything"
+                >
+                  <Icon name="refresh" size={13} />
+                </button>
+              </>
+            )}
+          </div>
+        )
       ) : (
         <div className="tiny faint">Only hosts can start playlists in this room.</div>
       )}
 
-      {open && <PlaylistVideos id={p.id} editable={editable} onChanged={onChanged} onDeleted={onDeleted} />}
+      {videos}
     </div>
   );
 }
 
 /* ---------------------------------------------------------------- */
-/* Its videos - edited here without touching the queue               */
+/* Its videos - click one to play it                                 */
 /* ---------------------------------------------------------------- */
 
 interface PlaylistVideo extends MediaItem {
@@ -277,12 +289,23 @@ interface PlaylistVideo extends MediaItem {
 
 function PlaylistVideos({
   id,
+  version,
   editable,
+  canControl,
+  currentItemId,
+  bookmark,
+  onPlayItem,
   onChanged,
   onDeleted,
 }: {
   id: string;
+  version: number;
   editable: boolean;
+  canControl: boolean;
+  /** The episode on screen, when the room plays this playlist. */
+  currentItemId: string | null;
+  bookmark: PlaylistSummary['progress'];
+  onPlayItem: (itemId: string) => void;
   onChanged: () => void;
   onDeleted: () => void;
 }) {
@@ -292,6 +315,7 @@ function PlaylistVideos({
   const [link, setLink] = useState('');
   const [adding, setAdding] = useState(false);
   const [offerWhole, setOfferWhole] = useState(false);
+  const currentRef = useRef<HTMLLIElement | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -305,7 +329,12 @@ function PlaylistVideos({
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [load, version]);
+
+  // Keep the episode on screen in view as the playlist moves on.
+  useEffect(() => {
+    currentRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [currentItemId, items]);
 
   const add = async (mode: 'auto' | 'playlist') => {
     if (!link.trim()) return;
@@ -345,7 +374,7 @@ function PlaylistVideos({
   };
 
   const destroy = async () => {
-    if (!confirm(`Delete the playlist "${name}"? The queue is not affected.`)) return;
+    if (!confirm(`Delete the playlist "${name}"?`)) return;
     try {
       await api.del(`/playlists/${id}`);
       toast(`Deleted "${name}"`, 'success');
@@ -357,6 +386,11 @@ function PlaylistVideos({
 
   if (!items) return <Spinner />;
   const total = items.reduce((sum, i) => sum + (i.duration || 0), 0);
+  // With nothing on screen from this playlist, mark where the group left off.
+  const bookmarkIndex =
+    !currentItemId && bookmark
+      ? items.findIndex((it) => it.source === bookmark.source && it.sourceId === bookmark.sourceId)
+      : -1;
 
   return (
     <div className="pl-videos">
@@ -369,25 +403,64 @@ function PlaylistVideos({
           <div className="tiny faint">
             {items.length} video{items.length === 1 ? '' : 's'}
             {total > 0 ? ` · ${formatTime(total)}` : ''}
+            {canControl ? ' · click one to play it' : ''}
           </div>
           <ol className="pl-video-list">
-            {items.map((it, i) => (
-              <li key={it.id} className="pl-video">
-                <span className="pl-video-n">{i + 1}</span>
-                <div className="grow" style={{ minWidth: 0 }}>
-                  <div className="pl-video-title clamp3">{it.title}</div>
-                  <div className="tiny faint">
-                    {sourceLabel(it.source)}
-                    {it.duration ? ` · ${formatTime(it.duration)}` : ''}
+            {items.map((it, i) => {
+              const current = it.id === currentItemId;
+              const marked = i === bookmarkIndex;
+              return (
+                <li
+                  key={it.id}
+                  ref={current ? currentRef : undefined}
+                  className={['pl-video', current ? 'current' : '', canControl ? 'playable' : ''].join(' ')}
+                  onClick={() => canControl && !current && onPlayItem(it.id)}
+                  onKeyDown={(e) => {
+                    if ((e.key === 'Enter' || e.key === ' ') && canControl && !current) {
+                      e.preventDefault();
+                      onPlayItem(it.id);
+                    }
+                  }}
+                  tabIndex={canControl ? 0 : undefined}
+                  title={canControl && !current ? 'Play this one' : undefined}
+                >
+                  <span className="pl-video-n">{i + 1}</span>
+                  <div className="q-thumb pl-video-thumb">
+                    {it.thumbnail ? <img src={it.thumbnail} alt="" loading="lazy" /> : <span>🎞️</span>}
+                    {it.duration ? <span className="dur">{formatTime(it.duration)}</span> : null}
+                    {(current || (canControl && !current)) && (
+                      <span className="pl-video-play" data-current={current || undefined}>
+                        <Icon name="play" size={14} />
+                      </span>
+                    )}
                   </div>
-                </div>
-                {editable && (
-                  <button className="btn ghost icon sm" onClick={() => remove(it)} title="Remove from this playlist">
-                    <Icon name="close" size={12} />
-                  </button>
-                )}
-              </li>
-            ))}
+                  <div className="grow" style={{ minWidth: 0 }}>
+                    <div className="pl-video-title clamp3">{it.title}</div>
+                    <div className="tiny faint">
+                      {current ? (
+                        <span style={{ color: 'var(--accent)', fontWeight: 600 }}>Now playing</span>
+                      ) : marked ? (
+                        <span style={{ color: 'var(--accent)' }}>Left off at {formatTime(bookmark!.position)}</span>
+                      ) : (
+                        sourceLabel(it.source)
+                      )}
+                    </div>
+                  </div>
+                  {editable && (
+                    <button
+                      className="btn ghost icon sm pl-video-remove"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void remove(it);
+                      }}
+                      title="Remove from this playlist"
+                    >
+                      <Icon name="close" size={12} />
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ol>
         </>
       )}
@@ -407,7 +480,7 @@ function PlaylistVideos({
               placeholder="Paste a link to add it here"
               spellCheck={false}
             />
-            <button className="btn sm" onClick={() => add('auto')} disabled={adding || !link.trim()} title="Adds to this playlist - the queue stays as it is">
+            <button className="btn sm" onClick={() => add('auto')} disabled={adding || !link.trim()} title="Adds it to the end of this playlist">
               {adding ? <span className="spinner" /> : <Icon name="plus" size={13} />}
             </button>
           </div>
