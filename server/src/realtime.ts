@@ -29,7 +29,7 @@ import {
 import { z } from 'zod';
 import { creditWatchTime, logPlay } from './services/stats';
 import { createLogger } from './services/logger';
-import { recordProgress, resetProgress, setRoomPlaylist } from './services/playlistProgress';
+import { markWatched, recordEpisode, recordProgress, resetProgress, setRoomPlaylist } from './services/playlistProgress';
 import type { MediaItem, PublicUser, RoomRole, RoomRow } from './types';
 
 const log = createLogger('sync');
@@ -415,6 +415,11 @@ export function playEpisode(roomId: string, playlistId: string, itemId: string, 
   }
 }
 
+/** Played to its end: a playlist episode gets its "watched" mark. Skipping does not. */
+function finishedEpisode(room: RoomRow): void {
+  if (room.playlist_id && room.current_item_id) markWatched(room.playlist_id, room.current_item_id);
+}
+
 /** Rooms currently playing from `playlistId`, optionally only those on one episode. */
 function roomsPlaying(playlistId: string, itemId?: string): RoomRow[] {
   return (
@@ -785,6 +790,13 @@ export function initRealtime(httpServer: HttpServer): Server {
       const room = currentRoom()!;
       const pos = typeof payload?.position === 'number' ? payload.position : projectedPosition(room);
       writePlayback(room.id, { isPlaying: false, position: pos });
+      // The heartbeat only records while playing, so note the exact spot now:
+      // "continue" should land where it was paused, not up to 5s before.
+      const item = room.playlist_id ? currentMedia(room) : null;
+      if (room.playlist_id && item) {
+        recordProgress(room.playlist_id, { source: item.source, sourceId: item.sourceId, title: item.title }, pos);
+        recordEpisode(room.playlist_id, item.id, pos, item.duration);
+      }
       endWait(room.id);
       emitPlayback(room.id);
     });
@@ -843,6 +855,7 @@ export function initRealtime(httpServer: HttpServer): Server {
       if (payload?.itemId && payload.itemId !== room.current_item_id) return;
       const since = Date.now() - (lastAdvance.get(room.id) ?? 0);
       if (since < 2000) return;
+      finishedEpisode(room);
       advance(room.id, 1);
     });
 
@@ -1047,6 +1060,7 @@ export function initRealtime(httpServer: HttpServer): Server {
       if (!room || room.is_playing !== 1) continue;
 
       if (payload && overranTheEnd(roomId, room, payload)) {
+        finishedEpisode(room);
         advance(roomId, 1);
         continue;
       }
@@ -1054,11 +1068,13 @@ export function initRealtime(httpServer: HttpServer): Server {
       // Keep the playlist's bookmark current, so leaving mid-episode and coming
       // back tomorrow lands in the right place. Queue videos have no bookmark.
       if (payload && room.playlist_id && payload.item) {
+        const at = payload.position + (Date.now() - payload.stateAt) / 1000;
         recordProgress(
           room.playlist_id,
           { source: payload.item.source, sourceId: payload.item.sourceId, title: payload.item.title },
-          payload.position + (Date.now() - payload.stateAt) / 1000
+          at
         );
+        recordEpisode(room.playlist_id, payload.item.id, at, payload.item.duration);
       }
 
       const watching = new Set<string>();

@@ -10,7 +10,14 @@ import {
   playlistDeleted,
   removeEpisode,
 } from '../realtime';
-import { progressFor, progressForMany, resetProgress } from '../services/playlistProgress';
+import {
+  episodeProgress,
+  forgetEpisodes,
+  progressFor,
+  progressForMany,
+  resetProgress,
+  watchedCounts,
+} from '../services/playlistProgress';
 import type { MediaItem } from '../types';
 
 export const playlistsRouter = Router();
@@ -63,6 +70,12 @@ function toDTO(rows: ReturnType<typeof itemsOf>) {
   }));
 }
 
+/** Each episode with how far the group got into it. */
+function withEpisodeProgress(playlistId: string, items: ReturnType<typeof toDTO>) {
+  const seen = episodeProgress(playlistId);
+  return items.map((i) => ({ ...i, position: seen.get(i.id)?.position ?? 0, watched: seen.get(i.id)?.watched ?? false }));
+}
+
 playlistsRouter.get('/', (req, res) => {
   const rows = db
     .prepare(
@@ -87,11 +100,13 @@ playlistsRouter.get('/', (req, res) => {
   }>;
 
   const progress = progressForMany(rows.map((r) => r.id));
+  const watched = watchedCounts(rows.map((r) => r.id));
 
   res.json({
     playlists: rows.map((r) => ({
       id: r.id,
       progress: progress.get(r.id) ?? null,
+      watchedCount: watched.get(r.id) ?? 0,
       name: r.name,
       description: r.description,
       isShared: r.is_shared === 1,
@@ -192,7 +207,7 @@ playlistsRouter.get('/:id', (req, res) => {
       createdAt: full.created_at,
       updatedAt: full.updated_at,
     },
-    items: toDTO(itemsOf(row.id)),
+    items: withEpisodeProgress(row.id, toDTO(itemsOf(row.id))),
     progress: progressFor(row.id),
   });
 });
@@ -211,6 +226,8 @@ playlistsRouter.delete('/:id/progress', (req, res) => {
     return;
   }
   resetProgress(row.id);
+  // "Reset" in the UI means "we have not seen any of it": marks go too.
+  if (req.query.episodes !== '0') forgetEpisodes(row.id);
   announcePlaylistChange(row.id);
   res.json({ ok: true });
 });
@@ -374,11 +391,14 @@ playlistsRouter.post('/:id/play/:roomId', (req, res) => {
       return;
     }
     start = hit;
-    // Clicking the episode the bookmark sits on continues it, the way people
-    // expect "that one" to mean "where we were in that one".
-    if (saved && saved.source === hit.source && saved.sourceId === hit.source_id) {
-      startAt = saved.position;
-      resumed = { title: hit.title, position: saved.position };
+    // Clicking a half-watched episode continues it, the way people expect
+    // "that one" to mean "where we were in that one". Watched ones start over.
+    const seen = episodeProgress(row.id).get(hit.id);
+    const near = hit.duration && hit.duration > 0 ? hit.duration - 10 : Infinity;
+    const at = seen && !seen.watched ? seen.position : 0;
+    if (at > 5 && at < near) {
+      startAt = at;
+      resumed = { title: hit.title, position: at };
     }
   } else if (req.body?.resume === true && saved) {
     const hit = items.find((i) => i.source === saved.source && i.source_id === saved.sourceId);

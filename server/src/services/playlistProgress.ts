@@ -136,3 +136,71 @@ export function roomPlaylistId(roomId: string): string | null {
     | undefined;
   return row?.playlist_id ?? null;
 }
+
+/* ------------------------------------------------------------------ */
+/* Per episode                                                         */
+/* ------------------------------------------------------------------ */
+
+/** Seen this much of an episode and it counts as watched - credits and all. */
+const WATCHED_SHARE = 0.9;
+
+export interface EpisodeProgress {
+  position: number;
+  watched: boolean;
+}
+
+/** Heartbeat: where the group is inside this episode. Never throws into the tick. */
+export function recordEpisode(playlistId: string, itemId: string, position: number, duration: number | null): void {
+  try {
+    const seen = duration && duration > 0 && position >= duration * WATCHED_SHARE ? 1 : 0;
+    db.prepare(
+      `INSERT INTO playlist_item_progress (item_id, playlist_id, position, watched, updated_at)
+       SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM playlist_items WHERE id = ? AND playlist_id = ?)
+       ON CONFLICT(item_id) DO UPDATE SET
+         position = excluded.position,
+         -- once watched, a rewatch does not make it unwatched again
+         watched = MAX(watched, excluded.watched),
+         updated_at = excluded.updated_at`
+    ).run(itemId, playlistId, Math.max(0, position), seen, Date.now(), itemId, playlistId);
+  } catch (err) {
+    log.warn('could not record episode progress', {
+      item: itemId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** The player reached the end of it: watched, and nothing left to resume. */
+export function markWatched(playlistId: string, itemId: string): void {
+  db.prepare(
+    `INSERT INTO playlist_item_progress (item_id, playlist_id, position, watched, updated_at)
+     SELECT ?, ?, 0, 1, ? WHERE EXISTS (SELECT 1 FROM playlist_items WHERE id = ? AND playlist_id = ?)
+     ON CONFLICT(item_id) DO UPDATE SET position = 0, watched = 1, updated_at = excluded.updated_at`
+  ).run(itemId, playlistId, Date.now(), itemId, playlistId);
+}
+
+export function episodeProgress(playlistId: string): Map<string, EpisodeProgress> {
+  const rows = db
+    .prepare('SELECT item_id, position, watched FROM playlist_item_progress WHERE playlist_id = ?')
+    .all(playlistId) as Array<{ item_id: string; position: number; watched: number }>;
+  return new Map(rows.map((r) => [r.item_id, { position: r.position, watched: r.watched === 1 }]));
+}
+
+export function watchedCounts(playlistIds: string[]): Map<string, number> {
+  const out = new Map<string, number>();
+  if (playlistIds.length === 0) return out;
+  const holes = playlistIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(
+      `SELECT playlist_id, COUNT(*) AS n FROM playlist_item_progress
+        WHERE watched = 1 AND playlist_id IN (${holes}) GROUP BY playlist_id`
+    )
+    .all(...playlistIds) as Array<{ playlist_id: string; n: number }>;
+  for (const r of rows) out.set(r.playlist_id, r.n);
+  return out;
+}
+
+/** Wipe the watched marks too - "we have not seen any of this". */
+export function forgetEpisodes(playlistId: string): void {
+  db.prepare('DELETE FROM playlist_item_progress WHERE playlist_id = ?').run(playlistId);
+}

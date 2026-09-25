@@ -713,8 +713,10 @@ export function RoomPage() {
               activePlaylistId={playback.playlistId ?? null}
               currentItemId={playback.currentItemId}
               isPlaying={playback.isPlaying}
+              currentPosition={Math.floor(displayPosition)}
               version={playlistsVersion}
               onStarting={() => setArmed(true)}
+              onResume={() => actions.play()}
             />
           )}
           {tab === 'chat' && (

@@ -213,6 +213,8 @@ export interface PlaylistSummary {
   id: string;
   name: string;
   progress: PlaylistProgress | null;
+  /** Episodes the group has seen to the end. */
+  watchedCount: number;
   description: string | null;
   isShared: boolean;
   ownerId: string | null;

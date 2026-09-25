@@ -1658,3 +1658,36 @@ img.avatar { object-fit: cover; }
 }
 .linklike:hover { text-decoration: underline; }
 .linklike:focus-visible { outline: 2px solid var(--accent); border-radius: 3px; }
+
+/* Watched episodes step back; half-seen ones carry a progress bar */
+.pl-video.watched .pl-video-title { color: var(--text-dim); font-weight: 500; }
+.pl-video.watched .pl-video-thumb img { opacity: 0.55; }
+.pl-video-seen {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 99px;
+  background: var(--success);
+  color: #fff;
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.35);
+}
+.pl-video-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.28);
+}
+.pl-video-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s linear;
+}
+/* The duration badge sits above the bar rather than on it. */
+.pl-video-thumb .dur { bottom: 6px; }

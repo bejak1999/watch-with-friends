@@ -23,8 +23,10 @@ export function PlaylistsPanel({
   activePlaylistId,
   currentItemId,
   isPlaying,
+  currentPosition,
   version,
   onStarting,
+  onResume,
 }: {
   roomId: string;
   queue: QueueItem[];
@@ -33,10 +35,14 @@ export function PlaylistsPanel({
   activePlaylistId: string | null;
   currentItemId: string | null;
   isPlaying: boolean;
+  /** Where the room is in the episode on screen, in whole seconds. */
+  currentPosition: number;
   /** Changes whenever somebody edits a playlist, so the lists refetch. */
   version: number;
   /** Called on a press that may start playback, so this browser joins in with sound. */
   onStarting: () => void;
+  /** Un-pause the room exactly where it stopped. */
+  onResume: () => void;
 }) {
   const { user, toast } = useApp();
   const [playlists, setPlaylists] = useState<PlaylistSummary[] | null>(null);
@@ -83,10 +89,11 @@ export function PlaylistsPanel({
   };
 
   const forget = async (p: PlaylistSummary) => {
+    if (!confirm(`Reset "${p.name}"? Where you got to and which videos were watched are forgotten.`)) return;
     try {
       await api.del(`/playlists/${p.id}/progress`);
-      setPlaylists((prev) => prev?.map((x) => (x.id === p.id ? { ...x, progress: null } : x)) ?? prev);
-      toast(`"${p.name}" will start from the beginning`, 'success');
+      setPlaylists((prev) => prev?.map((x) => (x.id === p.id ? { ...x, progress: null, watchedCount: 0 } : x)) ?? prev);
+      toast(`"${p.name}" is back to unwatched`, 'success');
     } catch (err) {
       toast(err instanceof Error ? err.message : 'Could not reset it', 'error');
     }
@@ -135,6 +142,10 @@ export function PlaylistsPanel({
                 editable={p.mine || Boolean(user?.isAdmin)}
                 busy={busyId === p.id}
                 onPlay={() => play(p, { resume: Boolean(p.progress) })}
+                onResume={() => {
+                  onStarting();
+                  onResume();
+                }}
                 onStartOver={() => play(p, {})}
                 onForget={() => forget(p)}
                 videos={
@@ -145,7 +156,7 @@ export function PlaylistsPanel({
                       editable={p.mine || Boolean(user?.isAdmin)}
                       canControl={canControl}
                       currentItemId={active ? currentItemId : null}
-                      bookmark={p.progress}
+                      currentPosition={currentPosition}
                       onPlayItem={(itemId) => play(p, { itemId })}
                       onChanged={load}
                       onDeleted={() => {
@@ -190,6 +201,7 @@ function PlaylistRow({
   canControl,
   busy,
   onPlay,
+  onResume,
   onStartOver,
   onForget,
   videos,
@@ -203,11 +215,22 @@ function PlaylistRow({
   editable: boolean;
   busy: boolean;
   onPlay: () => void;
+  onResume: () => void;
   onStartOver: () => void;
   onForget: () => void;
   videos: ReactNode;
 }) {
   const bookmarked = Boolean(p.progress);
+  // The main button always says what pressing it does next. The playlist on
+  // screen used to lose its buttons altogether, even while paused.
+  const primary = playing
+    ? null
+    : active && bookmarked
+      ? { label: 'Continue', hint: 'Carry on where it was paused', run: onResume }
+      : bookmarked
+        ? { label: 'Continue', hint: 'Pick up where the group left off', run: onPlay }
+        : { label: 'Play', hint: 'Play it from the first video', run: onPlay };
+  const watched = p.watchedCount > 0 ? `${p.watchedCount}/${p.itemCount} watched` : null;
 
   return (
     <div className="pl-row" data-active={active || undefined} data-open={open || undefined}>
@@ -227,6 +250,7 @@ function PlaylistRow({
                 {!p.mine && p.ownerName ? ` · from ${p.ownerName}` : ''}
               </>
             )}
+            {watched ? ` · ${watched}` : ''}
           </div>
           {p.progress ? (
             <div className="tiny truncate" style={{ color: 'var(--accent)' }}>
@@ -243,33 +267,33 @@ function PlaylistRow({
       </button>
 
       {canControl ? (
-        !active && (
-          <div className="pl-actions">
+        <div className="pl-actions">
+          {primary && (
             <button
               className="btn sm primary"
-              onClick={onPlay}
+              onClick={primary.run}
               disabled={busy || p.itemCount === 0}
-              title={bookmarked ? 'Pick up where the group left off' : 'Play it from the first video'}
+              title={primary.hint}
             >
-              {busy ? <span className="spinner" /> : <Icon name="play" size={13} />} {bookmarked ? 'Continue' : 'Play'}
+              {busy ? <span className="spinner" /> : <Icon name="play" size={13} />} {primary.label}
             </button>
-            {bookmarked && (
-              <>
-                <button className="btn ghost icon sm" onClick={onStartOver} disabled={busy} title="Play it from the first video">
-                  <Icon name="prev" size={13} />
-                </button>
-                <button
-                  className="btn ghost icon sm"
-                  onClick={onForget}
-                  disabled={busy}
-                  title="Forget where we got to, without playing anything"
-                >
-                  <Icon name="refresh" size={13} />
-                </button>
-              </>
-            )}
-          </div>
-        )
+          )}
+          {(bookmarked || active) && (
+            <button className="btn ghost icon sm" onClick={onStartOver} disabled={busy} title="Play it from the first video">
+              <Icon name="prev" size={13} />
+            </button>
+          )}
+          {(bookmarked || p.watchedCount > 0) && (
+            <button
+              className="btn ghost icon sm"
+              onClick={onForget}
+              disabled={busy}
+              title="Reset: forget where we got to and which videos were watched"
+            >
+              <Icon name="refresh" size={13} />
+            </button>
+          )}
+        </div>
       ) : (
         <div className="tiny faint">Only hosts can start playlists in this room.</div>
       )}
@@ -285,6 +309,9 @@ function PlaylistRow({
 
 interface PlaylistVideo extends MediaItem {
   id: string;
+  /** Seconds into it the group got; 0 when never started or watched through. */
+  position: number;
+  watched: boolean;
 }
 
 function PlaylistVideos({
@@ -293,7 +320,7 @@ function PlaylistVideos({
   editable,
   canControl,
   currentItemId,
-  bookmark,
+  currentPosition,
   onPlayItem,
   onChanged,
   onDeleted,
@@ -304,7 +331,7 @@ function PlaylistVideos({
   canControl: boolean;
   /** The episode on screen, when the room plays this playlist. */
   currentItemId: string | null;
-  bookmark: PlaylistSummary['progress'];
+  currentPosition: number;
   onPlayItem: (itemId: string) => void;
   onChanged: () => void;
   onDeleted: () => void;
@@ -327,9 +354,16 @@ function PlaylistVideos({
     }
   }, [id]);
 
+  // Marks and bars change as the playlist moves on: refetch on every episode
+  // change, and now and then while one plays.
   useEffect(() => {
     void load();
-  }, [load, version]);
+  }, [load, version, currentItemId]);
+  useEffect(() => {
+    if (!currentItemId) return;
+    const timer = window.setInterval(() => void load(), 15000);
+    return () => window.clearInterval(timer);
+  }, [load, currentItemId]);
 
   // Keep the episode on screen in view as the playlist moves on.
   useEffect(() => {
@@ -386,11 +420,6 @@ function PlaylistVideos({
 
   if (!items) return <Spinner />;
   const total = items.reduce((sum, i) => sum + (i.duration || 0), 0);
-  // With nothing on screen from this playlist, mark where the group left off.
-  const bookmarkIndex =
-    !currentItemId && bookmark
-      ? items.findIndex((it) => it.source === bookmark.source && it.sourceId === bookmark.sourceId)
-      : -1;
 
   return (
     <div className="pl-videos">
@@ -408,12 +437,20 @@ function PlaylistVideos({
           <ol className="pl-video-list">
             {items.map((it, i) => {
               const current = it.id === currentItemId;
-              const marked = i === bookmarkIndex;
+              // The one on screen shows the live position, the rest what was stored.
+              const at = current ? currentPosition : it.position;
+              const share = it.duration && it.duration > 0 ? Math.min(1, at / it.duration) : 0;
+              const started = !it.watched && at > 5 && share < 0.98;
               return (
                 <li
                   key={it.id}
                   ref={current ? currentRef : undefined}
-                  className={['pl-video', current ? 'current' : '', canControl ? 'playable' : ''].join(' ')}
+                  className={[
+                    'pl-video',
+                    current ? 'current' : '',
+                    it.watched && !current ? 'watched' : '',
+                    canControl ? 'playable' : '',
+                  ].join(' ')}
                   onClick={() => canControl && !current && onPlayItem(it.id)}
                   onKeyDown={(e) => {
                     if ((e.key === 'Enter' || e.key === ' ') && canControl && !current) {
@@ -422,12 +459,22 @@ function PlaylistVideos({
                     }
                   }}
                   tabIndex={canControl ? 0 : undefined}
-                  title={canControl && !current ? 'Play this one' : undefined}
+                  title={canControl && !current ? (started ? 'Continue this one' : 'Play this one') : undefined}
                 >
                   <span className="pl-video-n">{i + 1}</span>
                   <div className="q-thumb pl-video-thumb">
                     {it.thumbnail ? <img src={it.thumbnail} alt="" loading="lazy" /> : <span>🎞️</span>}
                     {it.duration ? <span className="dur">{formatTime(it.duration)}</span> : null}
+                    {it.watched && !current && (
+                      <span className="pl-video-seen" title="Watched">
+                        <Icon name="check" size={11} />
+                      </span>
+                    )}
+                    {(current || started) && share > 0 && (
+                      <span className="pl-video-bar">
+                        <span style={{ width: `${Math.max(3, share * 100)}%` }} />
+                      </span>
+                    )}
                     {(current || (canControl && !current)) && (
                       <span className="pl-video-play" data-current={current || undefined}>
                         <Icon name="play" size={14} />
@@ -439,8 +486,13 @@ function PlaylistVideos({
                     <div className="tiny faint">
                       {current ? (
                         <span style={{ color: 'var(--accent)', fontWeight: 600 }}>Now playing</span>
-                      ) : marked ? (
-                        <span style={{ color: 'var(--accent)' }}>Left off at {formatTime(bookmark!.position)}</span>
+                      ) : started ? (
+                        <span style={{ color: 'var(--accent)' }}>
+                          Stopped at {formatTime(at)}
+                          {it.duration ? ` of ${formatTime(it.duration)}` : ''}
+                        </span>
+                      ) : it.watched ? (
+                        'Watched'
                       ) : (
                         sourceLabel(it.source)
                       )}

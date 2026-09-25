@@ -234,6 +234,22 @@ MIGRATIONS.push((d) => {
   `);
 });
 
+MIGRATIONS.push((d) => {
+  // Per episode: how far the group got into it and whether it was seen to the
+  // end - for the "watched" marks and the progress bar on half-seen episodes.
+  // The playlist-wide bookmark stays as it is; this is the detail beneath it.
+  d.exec(`
+    CREATE TABLE playlist_item_progress (
+      item_id TEXT PRIMARY KEY REFERENCES playlist_items(id) ON DELETE CASCADE,
+      playlist_id TEXT NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+      position REAL NOT NULL DEFAULT 0,
+      watched INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_pl_item_progress ON playlist_item_progress(playlist_id);
+  `);
+});
+
 export function migrate(): void {
   const current = db.pragma('user_version', { simple: true }) as number;
   for (let v = current; v < MIGRATIONS.length; v++) {
