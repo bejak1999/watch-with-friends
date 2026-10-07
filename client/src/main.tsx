@@ -5,8 +5,10 @@ import { AppProvider } from './state/AppState';
 import { App } from './App';
 import './styles/global.css';
 import { installOverflowTitles } from './lib/overflowTitles';
+import { installPageDiagnostics } from './lib/diag';
 
 installOverflowTitles();
+installPageDiagnostics();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

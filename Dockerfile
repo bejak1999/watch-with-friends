@@ -18,6 +18,12 @@ RUN npm ci
 COPY server ./server
 COPY client ./client
 
+# The commit this image is built from: shown in the app, compared against the
+# latest published image to say when an update is out, and baked into the page
+# so a browser still running an old page can be told to reload.
+ARG APP_COMMIT=dev
+ENV APP_COMMIT=$APP_COMMIT
+
 RUN npm run build
 
 # Drop dev dependencies so only runtime code is copied forward.
@@ -46,6 +52,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN python3 -m venv /opt/ytdlp \
     && /opt/ytdlp/bin/pip install --no-cache-dir --upgrade pip yt-dlp \
     && /opt/ytdlp/bin/yt-dlp --version
+
+ARG APP_COMMIT=dev
+ARG APP_BUILT_AT=
+ENV APP_COMMIT=$APP_COMMIT \
+    APP_BUILT_AT=$APP_BUILT_AT
 
 ENV NODE_ENV=production \
     PORT=8080 \

@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useApp } from '../state/AppState';
 import { Avatar, Brand, Icon } from './ui';
+import { api, type VersionInfo } from '../lib/api';
+import { useStalePage } from '../lib/appVersion';
 
 export function Layout() {
   const { user, siteName, logout } = useApp();
@@ -15,6 +17,18 @@ export function Layout() {
   }, [collapsed]);
   const location = useLocation();
   const navigate = useNavigate();
+  const stale = useStalePage();
+  const [version, setVersion] = useState<VersionInfo | null>(null);
+
+  // Which build runs, and for admins whether a newer image is out. The server
+  // checks GitHub itself every few hours; this only reads its answer.
+  useEffect(() => {
+    if (!user) return;
+    const load = () => void api.get<VersionInfo>('/version').then(setVersion).catch(() => undefined);
+    load();
+    const timer = window.setInterval(load, 30 * 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [user, stale]);
 
   useEffect(() => {
     setNavOpen(false);
@@ -47,6 +61,15 @@ export function Layout() {
       )}
 
       <div className="sidebar-footer">
+        {user.isAdmin && version?.update?.available && (
+          <NavLink to="/admin" className="update-link" title="See what changed and how to update">
+            <Icon name="download" size={14} />
+            <span className="grow">
+              Update available
+              {version.update.behind ? <span className="tiny"> · {version.update.behind} change{version.update.behind === 1 ? '' : 's'}</span> : null}
+            </span>
+          </NavLink>
+        )}
         <div className="row" style={{ gap: 8, padding: '4px 6px' }}>
           <Avatar name={user.displayName} color={user.avatarColor} url={user.avatarUrl} />
           <div className="grow" style={{ minWidth: 0 }}>
@@ -65,6 +88,14 @@ export function Layout() {
             <Icon name="logout" size={15} />
           </button>
         </div>
+        {version && (
+          <div
+            className="version-line"
+            title={version.builtAt ? `Built ${new Date(version.builtAt).toLocaleString()}` : 'Built outside CI'}
+          >
+            v{version.version} · {version.short}
+          </div>
+        )}
       </div>
     </nav>
   );
@@ -74,6 +105,17 @@ export function Layout() {
       {nav}
       {navOpen && <div className="nav-scrim" onClick={() => setNavOpen(false)} />}
       <div className="main">
+        {stale && (
+          // The server was updated while this page was open. Old page code
+          // against a new server is how "only I have this bug" happens.
+          <div className="stale-banner" role="status">
+            <Icon name="refresh" size={15} />
+            <span className="grow">A new version of the app was installed. Reload to use it.</span>
+            <button className="btn sm primary" onClick={() => window.location.reload()}>
+              Reload
+            </button>
+          </div>
+        )}
         <div className="mobile-bar">
           <button className="btn ghost icon" onClick={() => setNavOpen(true)} aria-label="Open menu">
             <Icon name="menu" />

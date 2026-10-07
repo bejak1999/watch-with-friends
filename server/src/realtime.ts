@@ -29,10 +29,14 @@ import {
 import { z } from 'zod';
 import { creditWatchTime, logPlay } from './services/stats';
 import { createLogger } from './services/logger';
+import { describeBrowser } from './services/clientInfo';
+import { versionInfo } from './services/version';
 import { markWatched, recordEpisode, recordProgress, resetProgress, setRoomPlaylist } from './services/playlistProgress';
 import type { MediaItem, PublicUser, RoomRole, RoomRow } from './types';
 
 const log = createLogger('sync');
+/** What browsers report about themselves: visibility, players, sound, errors. */
+const clientLog = createLogger('client');
 
 /**
  * Socket payloads arrive straight from a browser, so they get the same
@@ -92,6 +96,13 @@ interface SocketState {
   reportedAt: number;
   chatBucket: Bucket;
   queueBucket: Bucket;
+  diagBucket: Bucket;
+  /** "Chrome 141 · Windows" - in every log line about this viewer. */
+  browser: string;
+  /** The tab is in the background. A hidden tab never holds the room up. */
+  hidden: boolean;
+  /** Build of the page this browser is running, which can lag behind ours. */
+  clientCommit: string | null;
 }
 
 const socketState = new WeakMap<Socket, SocketState>();
@@ -109,6 +120,14 @@ const emptyRoomTimers = new Map<string, NodeJS.Timeout>();
  * so a video added afterwards sat there until somebody found the play button.
  */
 const queueEnded = new Map<string, boolean>();
+/**
+ * `${roomId}:${userId}` -> a "left" line not posted yet. A background tab gets
+ * frozen and thawed by the browser every minute or so, and each thaw is a
+ * disconnect plus a rejoin: the chat filled with "joined" / "left" pairs for
+ * somebody who never went anywhere. Wait a little before saying they left.
+ */
+const pendingLeaves = new Map<string, NodeJS.Timeout>();
+const LEAVE_GRACE_MS = 90_000;
 
 /**
  * A page reload, a phone locking its screen or a few seconds of bad signal all
@@ -336,6 +355,27 @@ export function broadcastSystemMessage(roomId: string, body: string): void {
   systemMessageTo(roomId, body);
 }
 
+function announceLeaveLater(roomId: string, user: PublicUser): void {
+  const key = `${roomId}:${user.id}`;
+  if (pendingLeaves.has(key)) return;
+  const timer = setTimeout(() => {
+    pendingLeaves.delete(key);
+    if (!onlineUserIds(roomId).has(user.id)) systemMessageTo(roomId, `${user.displayName} left`);
+  }, LEAVE_GRACE_MS);
+  timer.unref?.();
+  pendingLeaves.set(key, timer);
+}
+
+/** True when this user had only just dropped out - a reconnect, not a new arrival. */
+function cancelPendingLeave(roomId: string, userId: string): boolean {
+  const key = `${roomId}:${userId}`;
+  const timer = pendingLeaves.get(key);
+  if (!timer) return false;
+  clearTimeout(timer);
+  pendingLeaves.delete(key);
+  return true;
+}
+
 function systemMessageTo(roomId: string, body: string) {
   const id = newId();
   const now = Date.now();
@@ -551,7 +591,12 @@ function reconcileBuffering(roomId: string) {
     return;
   }
 
-  const buffering = socketsIn(roomId).filter((s) => socketState.get(s)?.buffering);
+  // Somebody with the tab in the background is not watching the picture; their
+  // player stalling there (browsers throttle hidden tabs) must not pause the room.
+  const buffering = socketsIn(roomId).filter((s) => {
+    const st = socketState.get(s);
+    return Boolean(st?.buffering && !st.hidden);
+  });
   const anyBuffering = buffering.length > 0;
 
   if (anyBuffering && room.is_playing === 1) {
@@ -563,6 +608,8 @@ function reconcileBuffering(roomId: string) {
     log.info('waiting for buffer', {
       room: roomId,
       on: buffering.map((s) => socketState.get(s)?.user.username),
+      browsers: buffering.map((s) => socketState.get(s)?.browser),
+      position: Math.round(room.position),
     });
     return;
   }
@@ -679,12 +726,17 @@ export function initRealtime(httpServer: HttpServer): Server {
       reportedAt: 0,
       chatBucket: new Bucket(8, 5000),
       queueBucket: new Bucket(12, 10000),
+      diagBucket: new Bucket(120, 60000),
+      browser: describeBrowser(socket.handshake.headers['user-agent']),
+      hidden: false,
+      clientCommit: null,
     });
     next();
   });
 
   io.on('connection', (socket) => {
     const state = socketState.get(socket)!;
+    socket.emit('server:hello', { commit: versionInfo().commit, version: versionInfo().version });
 
     const ack = (cb: unknown, payload: unknown) => {
       if (typeof cb === 'function') (cb as (p: unknown) => void)(payload);
@@ -710,8 +762,10 @@ export function initRealtime(httpServer: HttpServer): Server {
       ack(cb, { clientSent, serverNow: Date.now() });
     });
 
-    socket.on('room:join', (payload: { roomId?: string }, cb: unknown) => {
+    socket.on('room:join', (payload: { roomId?: string; client?: { commit?: string; hidden?: boolean } }, cb: unknown) => {
       const roomId = String(payload?.roomId || '');
+      if (typeof payload?.client?.commit === 'string') state.clientCommit = payload.client.commit.slice(0, 40);
+      if (typeof payload?.client?.hidden === 'boolean') state.hidden = payload.client.hidden;
       const room = roomById(roomId);
       if (!room) {
         ack(cb, { error: 'Room not found' });
@@ -753,8 +807,20 @@ export function initRealtime(httpServer: HttpServer): Server {
         members: membersPayload(roomId),
       });
       emitMembers(roomId);
-      if (!wasOnlineElsewhere) systemMessageTo(roomId, `${state.user.displayName} joined`);
-      log.info('joined room', { room: roomId, user: state.user.username, role, online: onlineUserIds(roomId).size });
+      const reconnect = cancelPendingLeave(roomId, state.user.id);
+      if (!wasOnlineElsewhere && !reconnect) systemMessageTo(roomId, `${state.user.displayName} joined`);
+      log.info(reconnect ? 'rejoined room' : 'joined room', {
+        room: roomId,
+        user: state.user.username,
+        role,
+        online: onlineUserIds(roomId).size,
+        browser: state.browser,
+        hidden: state.hidden,
+        // A browser still running an older page than the server is a classic
+        // source of "it does something weird for me only".
+        page: state.clientCommit ? state.clientCommit.slice(0, 7) : 'unknown',
+        ...(state.clientCommit && state.clientCommit !== versionInfo().commit ? { stalePage: true } : {}),
+      });
     });
 
     socket.on('room:leave', () => {
@@ -1019,6 +1085,47 @@ export function initRealtime(httpServer: HttpServer): Server {
       reconcileBuffering(room.id);
     });
 
+    /** The tab went to the background or came back. */
+    socket.on('player:visibility', (payload: { hidden?: boolean }) => {
+      const hidden = Boolean(payload?.hidden);
+      if (hidden === state.hidden) return;
+      state.hidden = hidden;
+      if (state.roomId) reconcileBuffering(state.roomId);
+    });
+
+    /**
+     * Diagnostics from the browser: page visibility and freezing, the player
+     * refusing sound, stalls, black pictures, errors, connection drops. They go
+     * into the same log as everything else (scope "client"), so a complaint
+     * like "black picture, only subtitles" can be lined up with what the
+     * server saw at the same moment.
+     */
+    socket.on('diag:events', (payload: { events?: unknown }) => {
+      const events = Array.isArray(payload?.events) ? payload.events.slice(0, 30) : [];
+      for (const raw of events) {
+        if (!state.diagBucket.allow()) return;
+        const e = raw as { kind?: unknown; level?: unknown; detail?: unknown; hidden?: unknown; at?: unknown };
+        const kind = typeof e.kind === 'string' && /^[a-z0-9-]{1,40}$/.test(e.kind) ? e.kind : null;
+        if (!kind) continue;
+        const level = e.level === 'warn' || e.level === 'error' ? e.level : 'info';
+        let detail: Record<string, unknown> = {};
+        if (e.detail && typeof e.detail === 'object' && !Array.isArray(e.detail)) {
+          const json = JSON.stringify(e.detail);
+          detail = json.length <= 800 ? (e.detail as Record<string, unknown>) : { truncated: json.slice(0, 800) };
+        }
+        const ago = typeof e.at === 'number' ? Math.round((Date.now() - e.at) / 1000) : 0;
+        clientLog[level](kind, {
+          user: state.user.username,
+          room: state.roomId,
+          browser: state.browser,
+          hidden: e.hidden === true,
+          // Events queued while offline arrive late; say how late.
+          ...(ago > 5 ? { secondsAgo: ago } : {}),
+          ...detail,
+        });
+      }
+    });
+
     socket.on('sync:report', (payload: { position?: number }) => {
       const room = currentRoom();
       if (!room) return;
@@ -1032,12 +1139,17 @@ export function initRealtime(httpServer: HttpServer): Server {
       if (!roomId) return;
       // The reason is what tells "closed the tab" apart from "the tunnel timed
       // out mid-stream", which is the interesting case for sync complaints.
-      log.info('disconnected', { room: roomId, user: state.user.username, reason });
+      log.info('disconnected', {
+        room: roomId,
+        user: state.user.username,
+        reason,
+        browser: state.browser,
+        // "ping timeout" from a hidden tab is the browser freezing it, not the network.
+        hidden: state.hidden,
+      });
       emitMembers(roomId);
       reconcileBuffering(roomId);
-      if (!onlineUserIds(roomId).has(state.user.id)) {
-        systemMessageTo(roomId, `${state.user.displayName} left`);
-      }
+      if (!onlineUserIds(roomId).has(state.user.id)) announceLeaveLater(roomId, state.user);
       // Freeze an abandoned room, but only if it stays abandoned.
       if (onlineUserIds(roomId).size === 0) scheduleEmptyRoomFreeze(roomId);
     });

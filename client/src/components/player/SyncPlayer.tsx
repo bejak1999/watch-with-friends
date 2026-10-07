@@ -2,6 +2,7 @@ import { useEffect, useImperativeHandle, useRef, useState, forwardRef } from 're
 import { api, type PlaybackState, type QueueItem } from '../../lib/api';
 import { createAdapter, type Adapter, type AudioInfo, type QualityOption } from './adapters';
 import { Icon } from '../ui';
+import { diag } from '../../lib/diag';
 
 /** Where a viewer can watch this themselves when the embed is refused. */
 function externalLink(item: QueueItem | null): string | null {
@@ -129,6 +130,28 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   const stalledSince = useRef(0);
   const jumpBudget = useRef(JUMP_BUDGET);
   const warnedNoControl = useRef(false);
+  /** When this viewer started holding the room up, for the log line when it ends. */
+  const holdingSince = useRef(0);
+
+  /**
+   * Tell the room whether we are stuck. A hidden tab never says yes: the
+   * browser throttles and pauses media in the background, and that used to
+   * pause the whole room for somebody who was not even looking.
+   */
+  const reportStuck = (stuck: boolean, why: string) => {
+    if (stuck === reportedBuffering.current) return;
+    if (stuck && document.visibilityState !== 'visible') return;
+    reportedBuffering.current = stuck;
+    onBuffering(stuck);
+    const adapter = adapterRef.current;
+    if (stuck) {
+      holdingSince.current = Date.now();
+      diag('stall', { why, source: live.current.item?.source ?? null, ...(adapter?.describe?.() ?? {}) }, 'warn');
+    } else if (holdingSince.current) {
+      diag('stall-over', { why, heldMs: Date.now() - holdingSince.current });
+      holdingSince.current = 0;
+    }
+  };
 
   /* ---- adapter lifecycle: rebuild whenever the track changes ---- */
   useEffect(() => {
@@ -156,9 +179,12 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     const playable: QueueItem = restreamUrl
       ? { ...item, source: 'direct', sourceId: restreamUrl, url: restreamUrl }
       : item;
+    const createdAt = Date.now();
+    diag('player-load', { source: playable.source, restream: Boolean(restreamUrl) });
     const adapter = createAdapter(mount, playable, {
       onReady: () => {
         setReady(true);
+        diag('player-ready', { source: playable.source, ms: Date.now() - createdAt });
         const { playback: pb, serverOffset: off, armed: isArmed, volume: vol, muted: isMuted } = live.current;
         adapter.setVolume(vol);
         adapter.setMuted(isMuted);
@@ -200,6 +226,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
             });
           return;
         }
+        diag('player-failed', { source: playable.source, message: message.slice(0, 160), kind: kind ?? 'other' }, 'error');
         setLoadError(message);
         onError(message);
       },
@@ -264,6 +291,57 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     appliedRate.current = playback.rate || 1;
   }, [playback.rate, ready]);
 
+  /* ---- background / foreground ---- */
+  useEffect(() => {
+    let hiddenAt = 0;
+    const onVisibility = () => {
+      const adapter = adapterRef.current;
+      if (document.visibilityState !== 'visible') {
+        hiddenAt = Date.now();
+        // Going to the background releases the room: we are not watching.
+        if (reportedBuffering.current) {
+          reportedBuffering.current = false;
+          onBuffering(false);
+          holdingSince.current = 0;
+        }
+        stalledSince.current = 0;
+        return;
+      }
+      const away = hiddenAt ? Date.now() - hiddenAt : 0;
+      hiddenAt = 0;
+      if (!adapter?.ready) return;
+      const { playback: pb, serverOffset: off, armed: isArmed } = live.current;
+      // Measurements across the gap mean nothing - start the stall detector fresh.
+      lastSample.current = null;
+      stalledSince.current = 0;
+      if (!isArmed || !pb.isPlaying) return;
+
+      // Whatever the browser did in the background, put us back on the clock.
+      adapter.recover?.();
+      if (!adapter.isLive) {
+        const target = expectedPosition(pb, off);
+        const drift = adapter.getTime() - target;
+        if (Math.abs(drift) > 0.75) {
+          adapter.seek(target + 0.1);
+          lastSeekAt.current = Date.now();
+        }
+        if (away > 5000) {
+          diag('back-from-background', { awayS: Math.round(away / 1000), drift: Math.round(drift * 10) / 10, ...(adapter.describe?.() ?? {}) });
+        }
+      }
+
+      // Sound we had to give up while hidden: after a click on this page the
+      // browser allows it, so take it back without asking.
+      const gesture = (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive;
+      if (adapter.isSoundBlocked?.() && gesture) {
+        diag('sound-retry-on-return');
+        adapter.unmute?.();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [onBuffering]);
+
   /* ---- drift correction loop ---- */
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -292,18 +370,14 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
 
       // A stall that outlasts the grace period tells the room to wait for us.
       if (bufferingSince.current > 0 && !reportedBuffering.current && Date.now() - bufferingSince.current > 900) {
-        reportedBuffering.current = true;
-        onBuffering(true);
+        reportStuck(true, 'buffering');
       }
 
       if (adapter.isLive) {
         // A live edge has no drift or stall detector of its own, so the
         // adapter's own buffering events are the only truth. Mirror them here
         // too rather than leaving the clear stranded below this return.
-        if (reportedBuffering.current && bufferingSince.current === 0) {
-          reportedBuffering.current = false;
-          onBuffering(false);
-        }
+        if (reportedBuffering.current && bufferingSince.current === 0) reportStuck(false, 'live edge ok');
         return;
       }
 
@@ -347,8 +421,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
         if (Math.abs(actualAdvance) < 0.05 && elapsed > 0.3) {
           if (stalledSince.current === 0) stalledSince.current = now;
           if (now - stalledSince.current > 2500 && !reportedBuffering.current) {
-            reportedBuffering.current = true;
-            onBuffering(true);
+            reportStuck(true, 'time stood still');
           }
         } else if (stalledSince.current !== 0) {
           stalledSince.current = 0;
@@ -365,10 +438,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       if (!pb.isPlaying) stalledSince.current = 0;
 
       const stillStuck = bufferingSince.current !== 0 || (pb.isPlaying && stalledSince.current !== 0);
-      if (reportedBuffering.current && !stillStuck) {
-        reportedBuffering.current = false;
-        onBuffering(false);
-      }
+      if (reportedBuffering.current && !stillStuck) reportStuck(false, 'playing again');
 
       if (!pb.isPlaying) return;
       // Give a fresh seek time to settle before judging drift again.

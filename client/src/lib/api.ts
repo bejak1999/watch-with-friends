@@ -226,6 +226,26 @@ export interface PlaylistSummary {
   mine: boolean;
 }
 
+export interface UpdateStatus {
+  enabled: boolean;
+  checkedAt: number | null;
+  available: boolean;
+  latest: { commit: string; short: string; at: string; title: string } | null;
+  behind: number | null;
+  changes: Array<{ short: string; title: string; at: string }>;
+  error: string | null;
+  repo: string;
+}
+
+export interface VersionInfo {
+  version: string;
+  commit: string;
+  short: string;
+  builtAt: string | null;
+  /** Admins only. */
+  update?: UpdateStatus;
+}
+
 export interface StorageStats {
   globalUsed: number;
   globalLimit: number;

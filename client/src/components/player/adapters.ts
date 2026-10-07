@@ -1,4 +1,10 @@
 import type { QueueItem } from '../../lib/api';
+import { diag } from '../../lib/diag';
+
+const isVisible = () => document.visibilityState === 'visible';
+/** The page has had a click or key press: browsers then allow sound, even in a background tab. */
+const hadGesture = () =>
+  Boolean((navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive);
 
 export interface QualityOption {
   id: string;
@@ -58,6 +64,15 @@ export interface Adapter {
   unmute?(): void;
   /** What the element knows about its sound, for the diagnostics panel. */
   getAudioInfo?(): AudioInfo;
+  /** Muted by us because the browser refused sound (not by the viewer). */
+  isSoundBlocked?(): boolean;
+  /**
+   * The tab is back in front: get going again if the browser stopped us in
+   * the background, and repaint a picture that went black meanwhile.
+   */
+  recover?(): void;
+  /** A snapshot of the player's own state, for diagnostics. */
+  describe?(): Record<string, unknown>;
   destroy(): void;
 }
 
@@ -145,12 +160,24 @@ class YouTubeAdapter implements Adapter {
   /** Muted by us because the browser refused sound, not by the viewer. */
   private soundBlocked = false;
   private autoplayProbe: ReturnType<typeof setTimeout> | undefined;
+  /** How often a not-starting player was nudged before concluding sound is blocked. */
+  private nudges = 0;
+  /** A probe that came due in a background tab, to be run once it is visible. */
+  private probeOnVisible = false;
+  private readonly onVisibility = () => {
+    if (isVisible() && this.probeOnVisible) {
+      this.probeOnVisible = false;
+      this.player?.playVideo?.();
+      this.scheduleProbe(1500);
+    }
+  };
 
   constructor(
     private mount: HTMLElement,
     private videoId: string,
     private cb: AdapterCallbacks
   ) {
+    document.addEventListener('visibilitychange', this.onVisibility);
     void this.init();
   }
 
@@ -215,6 +242,7 @@ class YouTubeAdapter implements Adapter {
           this.lastState = e.data;
         },
         onError: (e: { data: number }) => {
+          diag('player-error', { player: 'youtube', code: e.data }, 'warn');
           const messages: Record<number, string> = {
             2: 'That YouTube video id is invalid',
             5: 'YouTube cannot play this video in an embedded player',
@@ -233,27 +261,59 @@ class YouTubeAdapter implements Adapter {
   /**
    * YouTube gives no error when a browser refuses to start it with sound - the
    * player just stays put. Left alone, that viewer looked like they were
-   * buffering and held the whole room. Muted playback is always allowed, so
-   * fall back to it and say so, the same way the HTML5 player does.
+   * buffering and held the whole room, so a player that does not start falls
+   * back to muted playback and says so.
+   *
+   * But "did not start" is only evidence of a sound block in a tab you are
+   * looking at, on a page nobody has clicked yet. In a background tab the
+   * browser simply holds media back until the tab is shown, and after any
+   * click sound is allowed anyway - the old probe muted those viewers for no
+   * reason. A muted tab then counts as silent to the browser, which pauses,
+   * throttles or freezes it: black picture, subtitles still running, room
+   * waiting. So: judge only when visible, nudge a few times after a click,
+   * and mute only as a last resort.
    */
   play() {
     this.wantsPlay = true;
+    this.nudges = 0;
     this.player?.playVideo?.();
-    clearTimeout(this.autoplayProbe);
-    this.autoplayProbe = setTimeout(() => {
-      if (this.destroyed || !this.wantsPlay || !this.player) return;
-      const state = this.player.getPlayerState?.();
-      // -1 unstarted, 5 cued, 2 paused: asked to play, did not.
-      const refused = state === -1 || state === 5 || state === 2;
-      if (!refused || this.player.isMuted?.()) return;
-      this.soundBlocked = true;
-      this.player.mute?.();
-      this.player.playVideo?.();
-      this.cb.onSoundBlocked?.(true);
-    }, 1500);
+    this.scheduleProbe(1500);
   }
+
+  private scheduleProbe(ms: number) {
+    clearTimeout(this.autoplayProbe);
+    this.autoplayProbe = setTimeout(() => this.probe(), ms);
+  }
+
+  private probe() {
+    if (this.destroyed || !this.wantsPlay || !this.player) return;
+    const state = this.player.getPlayerState?.();
+    // -1 unstarted, 5 cued, 2 paused: asked to play, did not.
+    const notStarted = state === -1 || state === 5 || state === 2;
+    if (!notStarted) return;
+    if (!isVisible()) {
+      this.probeOnVisible = true;
+      diag('yt-waiting-for-tab', { state });
+      return;
+    }
+    if (hadGesture() && this.nudges < 3) {
+      this.nudges += 1;
+      diag('yt-not-started', { state, nudge: this.nudges }, this.nudges > 1 ? 'warn' : 'info');
+      this.player.playVideo?.();
+      this.scheduleProbe(2000);
+      return;
+    }
+    if (this.player.isMuted?.()) return;
+    this.soundBlocked = true;
+    this.player.mute?.();
+    this.player.playVideo?.();
+    diag('sound-blocked', { player: 'youtube', state, hadGesture: hadGesture(), nudges: this.nudges }, 'warn');
+    this.cb.onSoundBlocked?.(true);
+  }
+
   pause() {
     this.wantsPlay = false;
+    this.probeOnVisible = false;
     clearTimeout(this.autoplayProbe);
     this.player?.pauseVideo?.();
   }
@@ -262,7 +322,34 @@ class YouTubeAdapter implements Adapter {
     this.soundBlocked = false;
     this.player?.unMute?.();
     this.player?.playVideo?.();
+    diag('sound-unblocked', { player: 'youtube' });
     this.cb.onSoundBlocked?.(false);
+  }
+
+  isSoundBlocked() {
+    return this.soundBlocked;
+  }
+
+  recover() {
+    if (!this.player || !this.wantsPlay) return;
+    const state = this.player.getPlayerState?.();
+    if (state !== 1 && state !== 3) {
+      diag('yt-restarted-after-background', { state });
+      this.player.playVideo?.();
+      this.scheduleProbe(1500);
+    }
+  }
+
+  describe() {
+    return {
+      player: 'youtube',
+      state: this.player?.getPlayerState?.() ?? null,
+      muted: Boolean(this.player?.isMuted?.()),
+      volume: this.player?.getVolume?.() ?? null,
+      quality: this.player?.getPlaybackQuality?.() ?? null,
+      loaded: Math.round((this.player?.getVideoLoadedFraction?.() ?? 0) * 100),
+      soundBlocked: this.soundBlocked,
+    };
   }
 
   getAudioInfo(): AudioInfo {
@@ -332,6 +419,7 @@ class YouTubeAdapter implements Adapter {
     this.destroyed = true;
     this.ready = false;
     clearTimeout(this.autoplayProbe);
+    document.removeEventListener('visibilitychange', this.onVisibility);
     try {
       this.player?.destroy?.();
     } catch {
@@ -689,6 +777,9 @@ class HtmlAdapter implements Adapter {
   /** Muted by us because the browser refused sound, not by the viewer. */
   private soundBlocked = false;
   private reportedTrackProblem = false;
+  /** Picture watchdog: decoded frames at the last check, and how long they stood still. */
+  private frameCheck = { frames: -1, time: 0, stuckChecks: 0, repairedAt: 0, reported: false };
+  private frameTimer: number | undefined;
 
   private src = '';
 
@@ -731,7 +822,58 @@ class HtmlAdapter implements Adapter {
     this.video.addEventListener('ended', () => this.cb.onEnded());
     this.video.addEventListener('error', () => this.reportMediaError());
 
+    if (!audioOnly) this.frameTimer = window.setInterval(() => this.watchPicture(), 2000);
     void this.attach();
+  }
+
+  private decodedFrames(): number | null {
+    const v = this.video as HTMLVideoElement & { webkitDecodedFrameCount?: number };
+    const quality = v.getVideoPlaybackQuality?.();
+    if (quality) return quality.totalVideoFrames;
+    return typeof v.webkitDecodedFrameCount === 'number' ? v.webkitDecodedFrameCount : null;
+  }
+
+  /**
+   * "Black picture, sound or subtitles carry on": the clock runs, but no new
+   * frame has been decoded. Browsers switch the video track off for hidden
+   * tabs and do not always bring it back cleanly. Only judged while visible -
+   * in the background no frames is normal. A seek to where we already are
+   * makes the decoder start over from the nearest keyframe.
+   */
+  private watchPicture() {
+    const fc = this.frameCheck;
+    if (this.destroyed || this.video.paused || this.video.readyState < 2 || !isVisible()) {
+      fc.frames = -1;
+      fc.stuckChecks = 0;
+      return;
+    }
+    const frames = this.decodedFrames();
+    if (frames == null) return;
+    const time = this.video.currentTime;
+    if (fc.frames >= 0 && time - fc.time > 1 && frames === fc.frames) {
+      fc.stuckChecks += 1;
+    } else if (fc.frames >= 0 && frames !== fc.frames) {
+      if (fc.reported) diag('picture-back', { afterRepair: fc.repairedAt > 0 });
+      fc.stuckChecks = 0;
+      fc.reported = false;
+    }
+    fc.frames = frames;
+    fc.time = time;
+
+    if (fc.stuckChecks >= 2 && !fc.reported) {
+      fc.reported = true;
+      diag('picture-frozen', { ...this.describe(), frames }, 'warn');
+    }
+    if (fc.stuckChecks >= 2 && Date.now() - fc.repairedAt > 20000) {
+      fc.repairedAt = Date.now();
+      fc.stuckChecks = 0;
+      diag('picture-repair', { at: Math.round(time) });
+      try {
+        this.video.currentTime = time;
+      } catch {
+        /* not seekable */
+      }
+    }
   }
 
   /**
@@ -757,6 +899,7 @@ class HtmlAdapter implements Adapter {
 
   private reportMediaError() {
     const err = this.video.error;
+    diag('player-error', { player: 'html5', code: err?.code ?? null, message: err?.message?.slice(0, 160) ?? null }, 'error');
     const detail: Record<number, string> = {
       1: 'Loading was aborted.',
       2: 'The network dropped while loading this file.',
@@ -807,6 +950,14 @@ class HtmlAdapter implements Adapter {
           });
           this.hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, () => this.announceCaptions());
           this.hls.on(Hls.Events.ERROR, (_e: unknown, data: any) => {
+            // Non-fatal ones (a segment retried) are routine; log only what matters.
+            if (data?.fatal || data?.type === 'mediaError') {
+              diag(
+                'hls-error',
+                { type: data?.type, details: data?.details, fatal: Boolean(data?.fatal), status: data?.response?.code ?? null },
+                data?.fatal ? 'error' : 'warn'
+              );
+            }
             if (data?.fatal) this.cb.onError('The HLS stream stopped working');
           });
           return;
@@ -830,13 +981,19 @@ class HtmlAdapter implements Adapter {
       .then(() => {
         if (!this.soundBlocked) this.cb.onSoundBlocked?.(false);
       })
-      .catch(() => {
-        // Already muted means the refusal is about something other than sound.
-        if (this.video.muted) return;
-        // Sound was refused - there was no click close enough to this call. Play
-        // muted so the picture stays in sync, but say so rather than hiding it.
+      .catch((err: unknown) => {
+        const name = err instanceof DOMException ? err.name : 'Error';
+        // Only NotAllowedError means "no sound without a click". AbortError -
+        // a seek or a pause landing on top of play(), routine during sync - used
+        // to be taken for it too and muted the viewer for nothing.
+        if (name !== 'NotAllowedError' || this.video.muted) {
+          if (name !== 'AbortError') diag('play-rejected', { player: 'html5', error: name }, 'warn');
+          return;
+        }
+        // Sound was refused. Play muted so the picture stays in sync, but say so.
         this.video.muted = true;
         this.soundBlocked = true;
+        diag('sound-blocked', { player: 'html5', hadGesture: hadGesture(), visible: isVisible() }, 'warn');
         this.video
           .play()
           .then(() => this.cb.onSoundBlocked?.(true))
@@ -847,8 +1004,49 @@ class HtmlAdapter implements Adapter {
   unmute() {
     this.soundBlocked = false;
     this.video.muted = false;
-    this.video.play().catch(() => undefined);
     this.cb.onSoundBlocked?.(false);
+    this.video
+      .play()
+      .then(() => diag('sound-unblocked', { player: 'html5' }))
+      .catch((err: unknown) => {
+        if (err instanceof DOMException && err.name === 'NotAllowedError') {
+          // Still not allowed (no click yet) - back to muted rather than paused.
+          this.video.muted = true;
+          this.soundBlocked = true;
+          this.cb.onSoundBlocked?.(true);
+          this.video.play().catch(() => undefined);
+        }
+      });
+  }
+
+  isSoundBlocked() {
+    return this.soundBlocked;
+  }
+
+  recover() {
+    if (this.destroyed || !this.wantsPlay) return;
+    if (this.video.paused) {
+      diag('html5-restarted-after-background', { readyState: this.video.readyState });
+      this.play();
+    }
+    // Let the picture watchdog look again straight away.
+    this.frameCheck.frames = -1;
+    this.frameCheck.stuckChecks = 0;
+  }
+
+  describe() {
+    return {
+      player: 'html5',
+      paused: this.video.paused,
+      muted: this.video.muted,
+      readyState: this.video.readyState,
+      networkState: this.video.networkState,
+      size: `${this.video.videoWidth}x${this.video.videoHeight}`,
+      at: Math.round(this.video.currentTime),
+      frames: this.decodedFrames(),
+      hlsLevel: this.hls ? this.hls.currentLevel : null,
+      soundBlocked: this.soundBlocked,
+    };
   }
 
   getAudioInfo(): AudioInfo {
@@ -905,6 +1103,7 @@ class HtmlAdapter implements Adapter {
   destroy() {
     this.destroyed = true;
     this.ready = false;
+    window.clearInterval(this.frameTimer);
     try {
       this.hls?.destroy?.();
     } catch {

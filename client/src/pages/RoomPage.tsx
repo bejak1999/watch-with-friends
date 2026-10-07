@@ -13,6 +13,8 @@ import { RoomSettingsDialog } from '../components/room/RoomSettingsDialog';
 import { CopyButton, Icon, Spinner } from '../components/ui';
 import { formatTime, sourceLabel } from '../lib/format';
 import type { MediaItem, Member, PlaybackState, QueueItem, RoomSnapshot } from '../lib/api';
+import { recentDiag } from '../lib/diag';
+import { PAGE_COMMIT } from '../lib/appVersion';
 
 type Tab = 'queue' | 'playlists' | 'chat' | 'people';
 
@@ -906,11 +908,29 @@ function DebugPanel({
     ['Room', `${room.id} · ${room.myRole ?? 'guest'} · control=${room.permissions.canControl}`],
     ['Online', `${members.filter((m) => m.online).length} of ${members.length}`],
     ['State stamp', new Date(playback.stateAt).toISOString().slice(11, 23)],
+    [
+      'Tab',
+      `${document.visibilityState}${
+        (navigator as Navigator & { userActivation?: { hasBeenActive: boolean } }).userActivation?.hasBeenActive
+          ? ', clicked'
+          : ', not clicked yet'
+      }`,
+    ],
+    ['Page build', PAGE_COMMIT === 'dev' ? 'dev' : PAGE_COMMIT.slice(0, 7)],
   ];
+
+  const events = recentDiag().slice(-12).reverse();
+  const eventLine = (e: (typeof events)[number]) =>
+    `${new Date(e.at).toLocaleTimeString()} ${e.kind}${e.hidden ? ' (hidden)' : ''}${
+      e.detail ? ` ${JSON.stringify(e.detail)}` : ''
+    }`;
 
   const copy = () => {
     const text = rows.map(([k, v]) => `${k}: ${v}`).join('\n');
-    navigator.clipboard?.writeText(`Watch With Friends diagnostics\n${text}`).catch(() => undefined);
+    const log = recentDiag().slice(-60).map(eventLine).join('\n');
+    navigator.clipboard
+      ?.writeText(`Watch With Friends diagnostics\n${text}\n\nRecent events (also in the admin log, area "client"):\n${log}`)
+      .catch(() => undefined);
   };
 
   return (
@@ -936,6 +956,20 @@ function DebugPanel({
           ))}
         </tbody>
       </table>
+      <div className="tiny faint" style={{ margin: '8px 0 4px' }}>
+        Recent events - also sent to the admin log
+      </div>
+      <div className="debug-events mono">
+        {events.length === 0 ? (
+          <div className="faint">nothing yet</div>
+        ) : (
+          events.map((e, i) => (
+            <div key={`${e.at}-${i}`} data-level={e.level}>
+              {eventLine(e)}
+            </div>
+          ))
+        )}
+      </div>
     </div>
   );
 }

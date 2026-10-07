@@ -18,7 +18,8 @@ export interface LogEntry {
   detail?: Record<string, unknown>;
 }
 
-const RING_SIZE = 500;
+// Client diagnostics land here too, so keep enough to cover an evening.
+const RING_SIZE = 3000;
 const ring: LogEntry[] = [];
 
 function configuredLevel(): LogLevel {

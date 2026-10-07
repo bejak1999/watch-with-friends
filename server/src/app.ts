@@ -5,7 +5,7 @@ import express from 'express';
 import cookieParser from 'cookie-parser';
 import { config } from './config';
 import { getSetting, migrate } from './db';
-import { attachUser, ensureBootstrapAdmin } from './auth';
+import { attachUser, ensureBootstrapAdmin, requireAuth } from './auth';
 import { authRouter } from './routes/auth';
 import { roomsRouter } from './routes/rooms';
 import { mediaRouter } from './routes/media';
@@ -18,6 +18,7 @@ import { restreamRouter } from './routes/restream';
 import { initRealtime } from './realtime';
 import { sweepExpired } from './services/rateLimit';
 import { createLogger, currentLogLevel } from './services/logger';
+import { startUpdateChecks, updateStatus, versionInfo } from './services/version';
 
 const log = createLogger('http');
 const boot = createLogger('boot');
@@ -77,7 +78,12 @@ app.use((req, res, next) => {
 });
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, name: getSetting('site_name'), version: '1.0.0' });
+  res.json({ ok: true, name: getSetting('site_name'), version: versionInfo().version, commit: versionInfo().short });
+});
+
+/** Which build this is - and, for admins, whether a newer one is out. */
+app.get('/api/version', requireAuth, (req, res) => {
+  res.json({ ...versionInfo(), update: req.user!.isAdmin ? updateStatus() : undefined });
 });
 
 app.get('/api/config', (_req, res) => {
@@ -147,6 +153,7 @@ server.listen(config.port, config.host, () => {
   console.log(`  data dir:    ${config.dataDir}`);
   const level = currentLogLevel();
   console.log(`  log level:   ${level}${level === 'debug' ? '' : ' (set LOG_LEVEL=debug for everything)'}`);
+  startUpdateChecks();
   boot.info('server started', {
     port: config.port,
     dataDir: config.dataDir,

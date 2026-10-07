@@ -11,10 +11,11 @@ type IconName =
   | 'play' | 'pause' | 'next' | 'prev' | 'plus' | 'close' | 'search' | 'settings' | 'users' | 'chat'
   | 'list' | 'home' | 'shield' | 'logout' | 'link' | 'trash' | 'shuffle' | 'repeat' | 'repeat-one'
   | 'volume' | 'mute' | 'menu' | 'check' | 'copy' | 'upload' | 'lock' | 'globe' | 'star' | 'edit'
-  | 'expand' | 'collapse' | 'grip' | 'save' | 'refresh' | 'chevron-down' | 'sync' | 'chart' | 'captions' | 'panel-left' | 'panel-right' | 'bug';
+  | 'expand' | 'collapse' | 'grip' | 'save' | 'refresh' | 'chevron-down' | 'sync' | 'chart' | 'captions' | 'panel-left' | 'panel-right' | 'bug' | 'download';
 
 const PATHS: Record<IconName, ReactNode> = {
   play: <path d="M6 4.5v15l12-7.5z" fill="currentColor" stroke="none" />,
+  download: <><path d="M12 4v11" /><path d="M7 10.5l5 5 5-5" /><path d="M5 19.5h14" /></>,
   pause: <><rect x="6.5" y="5" width="4" height="14" rx="1.2" fill="currentColor" stroke="none" /><rect x="13.5" y="5" width="4" height="14" rx="1.2" fill="currentColor" stroke="none" /></>,
   next: <><path d="M5 5l10 7-10 7z" fill="currentColor" stroke="none" /><rect x="17" y="5" width="2.6" height="14" rx="1" fill="currentColor" stroke="none" /></>,
   prev: <><path d="M19 5L9 12l10 7z" fill="currentColor" stroke="none" /><rect x="4.4" y="5" width="2.6" height="14" rx="1" fill="currentColor" stroke="none" /></>,

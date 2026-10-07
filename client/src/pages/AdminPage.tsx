@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '../lib/api';
+import { api, type UpdateStatus, type VersionInfo } from '../lib/api';
 import { useApp } from '../state/AppState';
 import { Avatar, CopyButton, Field, Icon, Meter, Modal, Spinner, Toggle } from '../components/ui';
 import { AvatarPicker } from '../components/AvatarPicker';
@@ -104,6 +104,7 @@ function OverviewTab() {
 
   return (
     <>
+      <UpdatePanel />
       <div className="stat-grid">
         {[
           ['Users', c.users],
@@ -181,6 +182,88 @@ function OverviewTab() {
         </div>
       </section>
     </>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Version and updates                                               */
+/* ---------------------------------------------------------------- */
+
+function UpdatePanel() {
+  const { toast } = useApp();
+  const [data, setData] = useState<{ running: VersionInfo; update: UpdateStatus } | null>(null);
+  const [checking, setChecking] = useState(false);
+
+  useEffect(() => {
+    api.get<{ running: VersionInfo; update: UpdateStatus }>('/admin/update').then(setData).catch(() => undefined);
+  }, []);
+
+  const check = async () => {
+    setChecking(true);
+    try {
+      const res = await api.post<{ running: VersionInfo; update: UpdateStatus }>('/admin/update/check');
+      setData(res);
+      if (res.update.error) toast(`Could not check: ${res.update.error}`, 'error');
+      else toast(res.update.available ? 'A newer version is available' : 'You are up to date', 'success');
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  if (!data) return null;
+  const { running, update } = data;
+  const image = `ghcr.io/${update.repo}:latest`;
+
+  return (
+    <section className="panel" data-update={update.available || undefined}>
+      <div className="row between wrap" style={{ gap: 8 }}>
+        <div>
+          <h2>
+            Version {running.version} <span className="mono small faint">{running.short}</span>
+          </h2>
+          <div className="sub small">
+            {running.builtAt ? `Built ${new Date(running.builtAt).toLocaleString()}` : 'Built outside the CI pipeline'}
+            {update.checkedAt ? ` · checked ${relativeTime(update.checkedAt)}` : ''}
+          </div>
+        </div>
+        <button className="btn sm" onClick={check} disabled={checking || !update.enabled}>
+          {checking ? <span className="spinner" /> : <Icon name="refresh" size={13} />} Check now
+        </button>
+      </div>
+
+      {!update.enabled ? (
+        <div className="small muted">Update checks are turned off (UPDATE_CHECK=off).</div>
+      ) : running.commit === 'dev' ? (
+        <div className="small muted">This is a local build, so there is nothing to compare against.</div>
+      ) : update.available && update.latest ? (
+        <>
+          <div className="update-callout">
+            <strong>A newer version is available</strong>
+            {update.behind ? ` - ${update.behind} change${update.behind === 1 ? '' : 's'} since yours` : ''}, published{' '}
+            {new Date(update.latest.at).toLocaleString()} ({update.latest.short}).
+          </div>
+          {update.changes.length > 0 && (
+            <ul className="change-list">
+              {update.changes.map((c) => (
+                <li key={c.short}>
+                  <span className="mono tiny faint">{c.short}</span> {c.title}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="small muted">
+            To update on TrueNAS: <em>Apps → this app → Update</em> (or <em>Edit → Save</em> to pull{' '}
+            <code>{image}</code> again). Everything in the data volume stays.
+          </div>
+        </>
+      ) : update.error && !update.latest ? (
+        <div className="small muted">The last check failed: {update.error}</div>
+      ) : (
+        <div className="small" style={{ color: 'var(--success)' }}>
+          ✓ Up to date{update.latest ? ` - the newest published image is this one (${update.latest.short}).` : '.'}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -1145,6 +1228,7 @@ function LogsTab() {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [level, setLevel] = useState<LogEntry['level']>('debug');
   const [scope, setScope] = useState('');
+  const [search, setSearch] = useState('');
   const [serverLevel, setServerLevel] = useState('');
   const [live, setLive] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -1152,7 +1236,7 @@ function LogsTab() {
   const load = useCallback(async () => {
     try {
       const res = await api.get<{ entries: LogEntry[]; level: string }>(
-        `/admin/logs?level=${level}&limit=400${scope ? `&scope=${encodeURIComponent(scope)}` : ''}`
+        `/admin/logs?level=${level}&limit=1500${scope ? `&scope=${encodeURIComponent(scope)}` : ''}`
       );
       setEntries(res.entries);
       setServerLevel(res.level);
@@ -1172,7 +1256,13 @@ function LogsTab() {
   }, [live, load]);
 
   // Every scope seen so far, so the filter does not need a hardcoded list.
-  const scopes = Array.from(new Set(entries.map((e) => e.scope))).sort();
+  // "client" is always offered: it is where browsers report playback trouble.
+  const scopes = Array.from(new Set([...entries.map((e) => e.scope), 'client', scope].filter(Boolean))).sort();
+  // A user name, a room id, "black", "sound"... matched against the whole line.
+  const needle = search.trim().toLowerCase();
+  const shown = needle
+    ? entries.filter((e) => `${e.message} ${JSON.stringify(e.detail ?? {})}`.toLowerCase().includes(needle))
+    : entries;
 
   return (
     <section className="card">
@@ -1180,7 +1270,9 @@ function LogsTab() {
         <div>
           <h2>Server log</h2>
           <div className="sub">
-            The last 500 events, held in memory. Restarting the container clears them. Console level is{' '}
+            The last 3000 events, held in memory - including what browsers report about playback (area{' '}
+            <code>client</code>: background tabs, blocked sound, stalls, black pictures). Restarting the container
+            clears them. Console level is{' '}
             <strong>{serverLevel || '…'}</strong> — set <code>LOG_LEVEL=debug</code> to also print debug lines to the
             container log.
           </div>
@@ -1205,6 +1297,13 @@ function LogsTab() {
             </option>
           ))}
         </select>
+        <input
+          className="input"
+          style={{ width: 200 }}
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search: user, room, word…"
+        />
         <Toggle checked={live} onChange={setLive} label="Live" />
         <button className="btn ghost" onClick={() => void load()}>
           Refresh
@@ -1213,11 +1312,11 @@ function LogsTab() {
 
       {loading ? (
         <Spinner />
-      ) : entries.length === 0 ? (
-        <div className="empty small">Nothing logged at this level yet.</div>
+      ) : shown.length === 0 ? (
+        <div className="empty small">{needle ? 'Nothing matches that search.' : 'Nothing logged at this level yet.'}</div>
       ) : (
         <div className="log-view">
-          {entries
+          {shown
             .slice()
             .reverse()
             .map((e, i) => (

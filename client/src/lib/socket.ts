@@ -1,4 +1,6 @@
 import { io, type Socket } from 'socket.io-client';
+import { attachDiagSocket } from './diag';
+import { noteServerCommit } from './appVersion';
 
 let socket: Socket | null = null;
 
@@ -11,6 +13,10 @@ export function getSocket(): Socket {
       reconnectionDelay: 700,
       reconnectionDelayMax: 6000,
       timeout: 12000,
+    });
+    attachDiagSocket(socket);
+    socket.on('server:hello', (p: { commit?: string }) => {
+      if (typeof p?.commit === 'string') noteServerCommit(p.commit);
     });
   }
   return socket;

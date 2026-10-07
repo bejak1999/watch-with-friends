@@ -12,6 +12,7 @@ import { forgetRoom, kickUser } from '../realtime';
 import { deleteAvatarFiles } from './avatars';
 import { globalStats } from '../services/stats';
 import { createLogger, currentLogLevel, logsAsText, recentLogs, type LogLevel } from '../services/logger';
+import { checkForUpdate, updateStatus, versionInfo } from '../services/version';
 import { ensureRunner, forgetCached, forgetRunner, restreamHealth } from '../services/ytdlp';
 import { CookieFileError, removeCookies, saveCookies } from '../services/youtubeCookies';
 import multer from 'multer';
@@ -363,6 +364,15 @@ adminRouter.delete('/restream/cookies', (req, res) => {
 /* ------------------------------------------------------------------ */
 /* Logs                                                                */
 /* ------------------------------------------------------------------ */
+
+adminRouter.get('/update', (_req, res) => {
+  res.json({ running: versionInfo(), update: updateStatus() });
+});
+
+adminRouter.post('/update/check', async (_req, res) => {
+  const update = await checkForUpdate();
+  res.json({ running: versionInfo(), update });
+});
 
 adminRouter.get('/logs', (req, res) => {
   const level = String(req.query.level || 'debug');

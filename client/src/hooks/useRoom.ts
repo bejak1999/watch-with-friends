@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Socket } from 'socket.io-client';
 import { getSocket, measureClockOffset } from '../lib/socket';
+import { PAGE_COMMIT } from '../lib/appVersion';
 import type { ChatMessage, MediaItem, Member, PlaybackState, QueueItem, RoomSnapshot } from '../lib/api';
 
 export type RoomStatus = 'connecting' | 'ready' | 'error' | 'kicked';
@@ -68,7 +69,8 @@ export function useRoom(roomId: string | undefined) {
     let cancelled = false;
 
     const join = () => {
-      socket.emit('room:join', { roomId }, (res: JoinResponse) => {
+      const client = { commit: PAGE_COMMIT, hidden: document.visibilityState !== 'visible' };
+      socket.emit('room:join', { roomId, client }, (res: JoinResponse) => {
         if (cancelled) return;
         if (res?.error) {
           setError(res.error);
@@ -169,6 +171,9 @@ export function useRoom(roomId: string | undefined) {
     socket.on('sync:waiting', onWaiting);
     socket.on('chat:typing', onTyping);
     socket.on('playlist:changed', onPlaylistChanged);
+    // A tab in the background never holds the room up - the server has to know.
+    const onVisibility = () => socket.emit('player:visibility', { hidden: document.visibilityState !== 'visible' });
+    document.addEventListener('visibilitychange', onVisibility);
 
     if (socket.connected) onConnect();
     else socket.connect();
@@ -199,6 +204,7 @@ export function useRoom(roomId: string | undefined) {
       socket.off('sync:waiting', onWaiting);
       socket.off('chat:typing', onTyping);
       socket.off('playlist:changed', onPlaylistChanged);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [roomId]);
 
