@@ -5,6 +5,8 @@ import { db } from '../db';
 import { newId, requireAuth } from '../auth';
 import {
   canManageRoom,
+  canQueue,
+  isBanned,
   joinRoom,
   memberList,
   memberRole,
@@ -14,8 +16,9 @@ import {
   roomByInviteToken,
   roomSummaries,
 } from '../services/rooms';
-import { getOnlineCounts, roomSnapshot, broadcastRoom, kickUser, forgetRoom } from '../realtime';
-import type { RoomRow } from '../types';
+import { MediaError, resolveMediaUrl } from '../services/media';
+import { getOnlineCounts, roomSnapshot, broadcastRoom, kickUser, forgetRoom, queueItems } from '../realtime';
+import type { MediaItem, RoomRow } from '../types';
 
 export const roomsRouter = Router();
 roomsRouter.use(requireAuth);
@@ -167,6 +170,63 @@ roomsRouter.post('/:id/reset-invite', (req, res) => {
   const token = crypto.randomBytes(9).toString('base64url');
   db.prepare('UPDATE rooms SET invite_token = ? WHERE id = ?').run(token, room.id);
   res.json({ inviteToken: token });
+});
+
+const queueUrlSchema = z.object({
+  url: z.string().trim().min(1).max(2000),
+  atTop: z.boolean().optional(),
+});
+
+/**
+ * Queue a single link without a socket - what the YouTube userscript calls from
+ * a thumbnail. Same permission rules as the room's own queue panel.
+ */
+roomsRouter.post('/:id/queue', async (req, res) => {
+  const room = roomById(req.params.id);
+  if (!room) {
+    res.status(404).json({ error: 'Room not found' });
+    return;
+  }
+  const parsed = queueUrlSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: 'Send a link to queue' });
+    return;
+  }
+  let role = memberRole(room.id, req.user!.id);
+  if (!role && room.is_public === 1 && !isBanned(room.id, req.user!.id)) role = joinRoom(room.id, req.user!.id);
+  if (!canQueue(room, req.user!, role)) {
+    res.status(403).json({ error: role ? 'Only hosts can add to this queue' : 'You are not a member of this room' });
+    return;
+  }
+
+  let items: MediaItem[];
+  try {
+    items = (await resolveMediaUrl(parsed.data.url, 'single')).items.slice(0, 1);
+  } catch (err) {
+    const status = err instanceof MediaError ? err.status : 500;
+    res.status(status).json({ error: err instanceof Error ? err.message : 'Could not read that link' });
+    return;
+  }
+  const item = items[0];
+  if (!item) {
+    res.status(422).json({ error: 'Nothing playable behind that link' });
+    return;
+  }
+
+  // Already waiting in the queue, or playing right now: don't add it twice.
+  const waiting = db
+    .prepare(
+      `SELECT q.id FROM queue_items q JOIN rooms r ON r.id = q.room_id
+        WHERE q.room_id = ? AND q.source = ? AND q.source_id = ? AND (q.played_at IS NULL OR q.id = r.current_item_id)`
+    )
+    .get(room.id, item.source, item.sourceId);
+  if (waiting) {
+    res.json({ status: 'exists', title: item.title, room: room.name });
+    return;
+  }
+
+  queueItems(room.id, req.user!, items, { atTop: parsed.data.atTop });
+  res.json({ status: 'added', title: item.title, room: room.name });
 });
 
 const roleSchema = z.object({ role: z.enum(['host', 'member']) });

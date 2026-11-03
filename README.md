@@ -412,6 +412,15 @@ microphone and geolocation.
 | `D` | 🐞 Diagnostics overlay |
 | `F` | 🖥️ Fullscreen — seek, play, volume, speed, resolution and subtitles ride on the picture and fade out when the mouse stops |
 
+## 🧩 Queue from YouTube (userscript)
+
+[`userscript/wwf-youtube.user.js`](userscript/wwf-youtube.user.js) is a Tampermonkey script that adds a button
+to YouTube thumbnails, below *Watch later* and *Add to queue*. One click puts the video into a room's queue,
+`Shift`+click puts it next. On the first click it asks for your server address and which room to use; both can
+be changed later from the Tampermonkey menu. You need to be signed in to Watch With Friends in the same browser.
+
+It calls `POST /api/rooms/:id/queue` with `{ "url": "...", "atTop": false }`, which uses the session cookie and
+the room's normal queue permissions, and answers `{ "status": "added" | "exists", "title", "room" }`.
 
 ---
 

@@ -444,6 +444,29 @@ function selectItem(roomId: string, itemId: string | null, autoplay: boolean, pl
 }
 
 /**
+ * Add items to a room's queue and tell everybody in it. Shared by the socket
+ * event and the REST endpoint the YouTube userscript calls.
+ */
+export function queueItems(
+  roomId: string,
+  user: PublicUser,
+  items: MediaItem[],
+  opts: { atTop?: boolean; silent?: boolean } = {}
+): void {
+  // Asked before adding: afterwards the new item itself makes the room look busy.
+  const idle = roomIsIdle(roomId);
+
+  const created = addToQueue(roomId, user.id, items, opts.atTop ? 'next' : 'end');
+  const label =
+    items.length === 1 ? `${user.displayName} added "${items[0].title}"` : `${user.displayName} added ${items.length} videos`;
+  broadcastQueue(roomId, opts.silent ? undefined : label);
+
+  // Adding to a room that is not playing anything starts it straight away -
+  // it used to be selected paused, which cost everyone an extra press.
+  if (idle && created[0]) selectItem(roomId, created[0].id, true);
+}
+
+/**
  * Play an episode of a saved playlist, optionally from a given offset ("continue
  * where we left off" lands mid-episode). The queue is left alone.
  */
@@ -961,21 +984,10 @@ export function initRealtime(httpServer: HttpServer): Server {
         });
         return;
       }
-      const room = currentRoom()!;
-      const items = parsed.data.items as MediaItem[];
-      // Asked before adding: afterwards the new item itself makes the room look busy.
-      const idle = roomIsIdle(room.id);
-
-      const created = addToQueue(room.id, state.user.id, items, parsed.data.atTop ? 'next' : 'end');
-      const label =
-        items.length === 1
-          ? `${state.user.displayName} added "${items[0].title}"`
-          : `${state.user.displayName} added ${items.length} videos`;
-      broadcastQueue(room.id, parsed.data.silent ? undefined : label);
-
-      // Adding to a room that is not playing anything starts it straight away -
-      // it used to be selected paused, which cost everyone an extra press.
-      if (idle && created[0]) selectItem(room.id, created[0].id, true);
+      queueItems(currentRoom()!.id, state.user, parsed.data.items as MediaItem[], {
+        atTop: parsed.data.atTop,
+        silent: parsed.data.silent,
+      });
     });
 
     socket.on('queue:remove', (payload: { itemId?: string }) => {
