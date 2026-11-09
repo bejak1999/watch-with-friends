@@ -29,6 +29,14 @@ export interface AdapterCallbacks {
    */
   onSoundBlocked?: (blocked: boolean) => void;
   /**
+   * The player was asked to play and will not, even muted. Something inside
+   * the embed wants the viewer - YouTube's "Sign in to confirm you're not a
+   * bot" is the usual one - and our click shield keeps them from reaching it.
+   * YouTube reports its bot check as error 150, so errors count too. Sent with
+   * false the first time the player actually plays.
+   */
+  onNeedsViewer?: (needed: boolean) => void;
+  /**
    * `kind` matters: an embed refusal is the one failure the app can route
    * around, by streaming the video through the server instead.
    */
@@ -164,6 +172,11 @@ class YouTubeAdapter implements Adapter {
   private nudges = 0;
   /** A probe that came due in a background tab, to be run once it is visible. */
   private probeOnVisible = false;
+  /** Reported through onNeedsViewer: the player will not start without the viewer. */
+  private needsViewer = false;
+  private everPlayed = false;
+  /** An embed that never even says it is ready is just as stuck. */
+  private readyWatch: ReturnType<typeof setTimeout> | undefined;
   private readonly onVisibility = () => {
     if (isVisible() && this.probeOnVisible) {
       this.probeOnVisible = false;
@@ -192,6 +205,7 @@ class YouTubeAdapter implements Adapter {
 
     const host = document.createElement('div');
     this.mount.appendChild(host);
+    this.watchForReady();
 
     this.player = new window.YT.Player(host, {
       videoId: this.videoId,
@@ -213,6 +227,7 @@ class YouTubeAdapter implements Adapter {
         onReady: () => {
           if (this.destroyed) return;
           this.ready = true;
+          clearTimeout(this.readyWatch);
           const d = this.player.getDuration?.();
           if (d > 0) this.cb.onDuration(d);
           // Offer the control straight away. YouTube only fills in its track
@@ -232,6 +247,10 @@ class YouTubeAdapter implements Adapter {
           if (e.data === YT.PLAYING && this.lastState === YT.PAUSED) this.cb.onLocalIntent?.('play');
           if (e.data === YT.PAUSED && this.lastState === YT.PLAYING) this.cb.onLocalIntent?.('pause');
           if (e.data === YT.PLAYING) {
+            if (!this.everPlayed || this.needsViewer) {
+              this.everPlayed = true;
+              this.setNeedsViewer(false, e.data, true);
+            }
             const d = this.player.getDuration?.();
             if (d > 0) this.cb.onDuration(d);
             this.publishQualities();
@@ -243,12 +262,16 @@ class YouTubeAdapter implements Adapter {
         },
         onError: (e: { data: number }) => {
           diag('player-error', { player: 'youtube', code: e.data }, 'warn');
+          // A failed player is not watching - and code 150 is also how the bot
+          // check ("Sign in to confirm you're not a bot") shows up.
+          this.setNeedsViewer(true, e.data);
           const messages: Record<number, string> = {
             2: 'That YouTube video id is invalid',
             5: 'YouTube cannot play this video in an embedded player',
             100: 'That YouTube video was removed or is private',
             101: 'The uploader does not allow this video to be embedded',
-            150: 'The uploader does not allow this video to be embedded',
+            // Also what YouTube's "Sign in to confirm you're not a bot" check reports.
+            150: "YouTube won't play this here - it may want you to sign in (bot check), or the uploader blocks embedding",
           };
           // 101 and 150 are the same refusal reported through two code paths.
           const refused = e.data === 101 || e.data === 150 || e.data === 5;
@@ -303,12 +326,42 @@ class YouTubeAdapter implements Adapter {
       this.scheduleProbe(2000);
       return;
     }
-    if (this.player.isMuted?.()) return;
+    // Already muted and still not playing: sound is not what holds it back.
+    // That is the embed waiting on the viewer - a bot check, a sign-in, a
+    // consent prompt - which only a click inside the player can answer.
+    if (this.player.isMuted?.()) {
+      this.setNeedsViewer(true, state);
+      return;
+    }
     this.soundBlocked = true;
     this.player.mute?.();
     this.player.playVideo?.();
     diag('sound-blocked', { player: 'youtube', state, hadGesture: hadGesture(), nudges: this.nudges }, 'warn');
     this.cb.onSoundBlocked?.(true);
+    // If muted playback does not start either, the next probe says so.
+    this.scheduleProbe(2500);
+  }
+
+  private setNeedsViewer(needed: boolean, state: number | null, announce = false) {
+    if (needed === this.needsViewer && !announce) return;
+    if (needed !== this.needsViewer) {
+      diag(needed ? 'yt-needs-viewer' : 'yt-needs-viewer-over', { state, ready: this.ready }, needed ? 'warn' : 'info');
+    }
+    this.needsViewer = needed;
+    this.cb.onNeedsViewer?.(needed);
+  }
+
+  private watchForReady() {
+    clearTimeout(this.readyWatch);
+    this.readyWatch = setTimeout(() => {
+      if (this.destroyed || this.ready) return;
+      // A background tab may simply not have loaded it yet; look again later.
+      if (!isVisible()) {
+        this.watchForReady();
+        return;
+      }
+      this.setNeedsViewer(true, null);
+    }, 15000);
   }
 
   pause() {
@@ -419,6 +472,7 @@ class YouTubeAdapter implements Adapter {
     this.destroyed = true;
     this.ready = false;
     clearTimeout(this.autoplayProbe);
+    clearTimeout(this.readyWatch);
     document.removeEventListener('visibilitychange', this.onVisibility);
     try {
       this.player?.destroy?.();

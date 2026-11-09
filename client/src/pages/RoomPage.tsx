@@ -76,6 +76,15 @@ export function RoomPage() {
   const [restreaming, setRestreaming] = useState(false);
   /** The browser refused sound, so the player is muted until someone clicks. */
   const [soundBlocked, setSoundBlocked] = useState(false);
+  /** The embed will not start until this viewer answers it - a bot check, a sign-in. */
+  const [playerNeedsViewer, setPlayerNeedsViewer] = useState(false);
+  /**
+   * The click shield is down and clicks reach the embedded player itself. The
+   * shield normally keeps the room in charge, but it also covered YouTube's
+   * "Sign in to confirm you're not a bot" button, leaving no way past it.
+   */
+  const [reachingPlayer, setReachingPlayer] = useState(false);
+  const [switchingToServer, setSwitchingToServer] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   /** Fullscreen has no chrome of its own, so the bar rides on the picture. */
   const [chromeVisible, setChromeVisible] = useState(true);
@@ -284,7 +293,31 @@ export function RoomPage() {
   );
 
   /* A new track gets a clean slate. */
-  useEffect(() => setPlayerFailed(false), [playback.currentItemId]);
+  useEffect(() => {
+    setPlayerFailed(false);
+    setReachingPlayer(false);
+  }, [playback.currentItemId]);
+
+  /* Once the player plays again, the room takes the clicks back. */
+  const onNeedsViewer = useCallback((needed: boolean, startedPlaying: boolean) => {
+    setPlayerNeedsViewer(needed);
+    if (startedPlaying) {
+      setReachingPlayer(false);
+      setPlayerFailed(false);
+    }
+  }, []);
+
+  const reachPlayer = useCallback(() => setReachingPlayer(true), []);
+
+  const streamViaServer = async () => {
+    const player = playerRef.current;
+    if (!player || switchingToServer) return;
+    setSwitchingToServer(true);
+    const failure = await player.streamViaServer();
+    setSwitchingToServer(false);
+    if (failure) toast(failure, 'error');
+    else setReachingPlayer(false);
+  };
 
   if (status === 'connecting') return <Spinner label="Joining the room" />;
 
@@ -341,10 +374,37 @@ export function RoomPage() {
             onSkip={() => actions.next()}
             onRestreaming={setRestreaming}
             onSoundBlocked={setSoundBlocked}
+            onNeedsViewer={onNeedsViewer}
+            reachingPlayer={reachingPlayer}
+            onReachPlayer={reachPlayer}
           />
 
           {/* Keeps clicks from reaching the embedded player so the room stays authoritative. */}
-          <div className="click-shield" onClick={togglePlay} onDoubleClick={toggleFullscreen} />
+          {!reachingPlayer && (
+            <div className="click-shield" onClick={togglePlay} onDoubleClick={toggleFullscreen} />
+          )}
+
+          {playerNeedsViewer && armed && !reachingPlayer && !restreaming && !playerFailed && (
+            <div className="player-needs-you">
+              <div className="small" style={{ fontWeight: 600 }}>
+                YouTube won't start for you. Is it asking you something - like signing in to prove you're not a bot?
+              </div>
+              <div className="tiny faint">The others keep watching; you join back in as soon as it plays.</div>
+              <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button className="btn primary sm" onClick={reachPlayer}>
+                  Let me click the player
+                </button>
+                <button
+                  className="btn sm"
+                  onClick={() => void streamViaServer()}
+                  disabled={switchingToServer}
+                  title="Your own picture comes through the server instead of YouTube's embed - nobody else is affected"
+                >
+                  <Icon name="sync" size={14} /> {switchingToServer ? 'Asking the server…' : 'Stream it via the server'}
+                </button>
+              </div>
+            </div>
+          )}
 
           {!currentItem && (
             <div className="stage-overlay">
@@ -376,11 +436,28 @@ export function RoomPage() {
             </div>
           )}
 
-          {soundBlocked && armed && (
+          {soundBlocked && armed && !playerNeedsViewer && !reachingPlayer && (
             // A click is exactly what the browser wants before it allows sound.
             <button className="sound-blocked" onClick={() => playerRef.current?.unmute()}>
               <Icon name="mute" size={16} /> The browser blocked the sound - click to turn it on
             </button>
+          )}
+
+          {/* Bottom right, clear of YouTube's own message in the middle-left. */}
+          {reachingPlayer && (
+              <div className="pill reach-pill">
+                <span title="Your clicks go straight to the embedded player, not to the room">Clicks go to the player</span>
+                <button
+                  className="linklike tiny"
+                  onClick={() => playerRef.current?.reload()}
+                  title="Load the player again - after signing in to YouTube in another tab, for example"
+                >
+                  Reload
+                </button>
+                <button className="linklike tiny" onClick={() => setReachingPlayer(false)} title="Hand clicks back to the room">
+                  Done
+                </button>
+              </div>
           )}
 
           <div className="stage-badges">

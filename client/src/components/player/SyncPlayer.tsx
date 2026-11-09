@@ -29,6 +29,13 @@ export interface SyncPlayerHandle {
   /** Turn sound back on after the browser blocked it. Call it from a click. */
   unmute(): void;
   getAudioInfo(): AudioInfo | null;
+  /**
+   * Play this YouTube video through the server instead of the embed - for this
+   * viewer only. Resolves to an error message, or null once it is switched.
+   */
+  streamViaServer(): Promise<string | null>;
+  /** Build the embed again, e.g. after signing in to YouTube in another tab. */
+  reload(): void;
 }
 
 interface Props {
@@ -57,6 +64,16 @@ interface Props {
   onRestreaming: (active: boolean) => void;
   /** The browser refused sound and the player fell back to muted. */
   onSoundBlocked: (blocked: boolean) => void;
+  /**
+   * The embed will not start until the viewer answers something inside it.
+   * `startedPlaying` marks the all-clear that comes from the player playing,
+   * as opposed to the reset on every new track.
+   */
+  onNeedsViewer: (needed: boolean, startedPlaying: boolean) => void;
+  /** Clicks go straight to the embed right now, so get out of its way. */
+  reachingPlayer: boolean;
+  /** Let clicks through to the embed, e.g. to read or answer its own message. */
+  onReachPlayer: () => void;
   /** Reports the resolutions this source can offer, once they are known. */
   onQualities: (options: QualityOption[], activeId: string) => void;
   /** Whether this source has subtitles at all, so the button can hide. */
@@ -96,6 +113,9 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     onSkip,
     onRestreaming,
     onSoundBlocked,
+    onNeedsViewer,
+    reachingPlayer,
+    onReachPlayer,
   },
   ref
 ) {
@@ -111,6 +131,14 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   const [restream, setRestream] = useState<{ itemId: string; url: string } | null>(null);
   const restreamUrl = item && restream && restream.itemId === item.id ? restream.url : null;
   const askingFor = useRef<string | null>(null);
+  /** Bumped to tear the embed down and build it again. */
+  const [reloads, setReloads] = useState(0);
+  /**
+   * The embed is waiting on this viewer (a bot check, a sign-in). Until they
+   * deal with it they are not watching, so - like an unarmed viewer - they
+   * must not hold the room up for everyone else.
+   */
+  const needsViewer = useRef(false);
 
   useEffect(() => {
     onRestreaming(Boolean(restreamUrl));
@@ -160,6 +188,8 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
     onQualities([], 'auto');
     onCaptionsAvailable(false);
     onSoundBlocked(false);
+    needsViewer.current = false;
+    onNeedsViewer(false, false);
     driftRef.current = 0;
     lastSample.current = null;
     stalledSince.current = 0;
@@ -233,6 +263,13 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       onQualities: (options, activeId) => onQualities(options, activeId),
       onCaptionsAvailable: (available) => onCaptionsAvailable(available),
       onSoundBlocked: (blocked) => onSoundBlocked(blocked),
+      onNeedsViewer: (needed) => {
+        needsViewer.current = needed;
+        if (needed && reportedBuffering.current) reportStuck(false, 'player needs the viewer');
+        // Playing after all (signed in, bot check passed): the error is history.
+        if (!needed) setLoadError(null);
+        onNeedsViewer(needed, !needed);
+      },
     });
 
     adapterRef.current = adapter;
@@ -241,7 +278,7 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       if (adapterRef.current === adapter) adapterRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [item?.id, item?.source, item?.sourceId, restreamUrl]);
+  }, [item?.id, item?.source, item?.sourceId, restreamUrl, reloads]);
 
   /* ---- volume / mute ---- */
   useEffect(() => {
@@ -368,6 +405,15 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
         return;
       }
 
+      // Stuck behind a bot check or sign-in: let the others carry on, and
+      // pick the clock up again once the player starts.
+      if (needsViewer.current) {
+        if (reportedBuffering.current) reportStuck(false, 'player needs the viewer');
+        stalledSince.current = 0;
+        lastSample.current = null;
+        return;
+      }
+
       // A stall that outlasts the grace period tells the room to wait for us.
       if (bufferingSince.current > 0 && !reportedBuffering.current && Date.now() - bufferingSince.current > 900) {
         reportStuck(true, 'buffering');
@@ -479,6 +525,29 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
       isReady: () => Boolean(adapterRef.current?.ready),
       unmute: () => adapterRef.current?.unmute?.(),
       getAudioInfo: () => adapterRef.current?.getAudioInfo?.() ?? null,
+      streamViaServer: async () => {
+        const current = live.current.item;
+        if (!current || current.source !== 'youtube') return 'Only YouTube videos can be streamed through the server.';
+        diag('restream-requested', { source: current.source });
+        try {
+          const res = await api.post<{ url: string }>('/restream/resolve', {
+            source: current.source,
+            sourceId: current.sourceId,
+          });
+          if (live.current.item?.id !== current.id) return null;
+          askingFor.current = current.id;
+          setRestream({ itemId: current.id, url: res.url });
+          return null;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'The server could not stream this video.';
+          diag('restream-refused', { message: message.slice(0, 160) }, 'warn');
+          return message;
+        }
+      },
+      reload: () => {
+        diag('player-reload');
+        setReloads((n) => n + 1);
+      },
     }),
     []
   );
@@ -486,13 +555,15 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
   return (
     <>
       <div className="player-mount" ref={mountRef} />
-      {loadError && (
+      {loadError && !reachingPlayer && (
         <div className="stage-overlay">
           <div className="inner">
             <div style={{ fontSize: '1.8rem' }}>⚠️</div>
             <div style={{ fontWeight: 600 }}>{loadError}</div>
             <div className="small faint">
-              Nothing here can fix this from inside the page - the site itself refused the embed.
+              {item?.source === 'youtube' && !restreamUrl
+                ? "If YouTube wants you to sign in first, “Show YouTube's player” lets you reach its button."
+                : 'Nothing here can fix this from inside the page - the site itself refused the embed.'}
             </div>
             <div className="row" style={{ gap: 8, marginTop: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
               {externalLink(item) && (
@@ -505,6 +576,15 @@ export const SyncPlayer = forwardRef<SyncPlayerHandle, Props>(function SyncPlaye
                 >
                   <Icon name="link" size={15} /> Watch it on the site
                 </a>
+              )}
+              {item?.source === 'youtube' && !restreamUrl && (
+                <button
+                  className="btn"
+                  onClick={onReachPlayer}
+                  title="Hides this notice and lets your clicks reach YouTube's own player, e.g. to sign in"
+                >
+                  Show YouTube's player
+                </button>
               )}
               {canControl && (
                 <button className="btn primary" onClick={onSkip}>
